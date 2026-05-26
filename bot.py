@@ -8,8 +8,6 @@ import static_ffmpeg
 
 # Встановлюємо ffmpeg автоматично
 static_ffmpeg.add_paths()
-except Exception:
-    subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True)
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
