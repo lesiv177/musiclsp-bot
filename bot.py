@@ -677,7 +677,7 @@ async def do_search(update, query, uid, ctx):
     all_labels = {"uk":"🎤 Всі пісні артиста","ru":"🎤 Все песни артиста","en":"🎤 All artist songs"}
     kb.append([
         InlineKeyboardButton(all_labels.get(l, all_labels["en"]), callback_data=f"artist|{artist}"),
-        InlineKeyboardButton(dl_labels.get(l, dl_labels["en"]), callback_data=f"dl20|{artist}"),
+        InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addlib|{title[:20]}"),
     ])
     kb.append([back_btn(uid)])
 
