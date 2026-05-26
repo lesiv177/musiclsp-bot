@@ -3,11 +3,11 @@
 #  Автор: Lesiv
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, subprocess, sys
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3
+import static_ffmpeg
 
 # Встановлюємо ffmpeg автоматично
-try:
-    subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+static_ffmpeg.add_paths()
 except Exception:
     subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True)
 from pathlib import Path
