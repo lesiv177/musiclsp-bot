@@ -3,7 +3,13 @@
 #  Автор: Lesiv
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, subprocess, sys
+
+# Встановлюємо ffmpeg автоматично
+try:
+    subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+except Exception:
+    subprocess.run(["apt-get", "install", "-y", "ffmpeg"], check=True)
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
