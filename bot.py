@@ -146,7 +146,7 @@ def set_state(uid, state):
 def has_access(uid):
     u = get_user(uid)
     if not u: return False
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     if u["sub_exp"] and datetime.datetime.fromisoformat(u["sub_exp"]) > now:
         return True
     if u["trial_exp"] and datetime.datetime.fromisoformat(u["trial_exp"]) > now:
