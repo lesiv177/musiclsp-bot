@@ -1,7 +1,7 @@
 # ============================================================
-#  MusicLSP — Головний бот (ВИПРАВЛЕНО v3)
+#  MusicLSP — Головний бот (ВИПРАВЛЕНО v4)
 #  Автор: Lesiv
-#  Фікси: бібліотека + додавання треків + артисти + топ100 + стабільність
+#  Фікси: YouTube блокування + бібліотека + пагінація + стабільність
 # ============================================================
 
 import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib
@@ -296,16 +296,52 @@ def get_global_stats():
         keys_total = c.execute("SELECT COUNT(*) as c FROM keys").fetchone()["c"]
     return {"total": total, "active": active, "trial": trial, "ku": keys_used, "kt": keys_total}
 
-# ─── Музика ───────────────────────────────────────────────────────────────────
+# ─── Музика (ОНОВЛЕНО з обходом блокування YouTube) ─────────────────────────
+
 def fmt_dur(s):
     if not s: return "—"
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
+def get_yt_opts(extra=None):
+    """Повертає базові опції yt-dlp з обходом блокувань"""
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "noplaylist": True,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "referer": "https://www.youtube.com/",
+        "headers": {
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web"],
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        },
+    }
+    if extra:
+        opts.update(extra)
+    return opts
+
 def yt_search(query, limit=10):
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+    opts = get_yt_opts()
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+    except Exception as e:
+        logger.warning(f"yt_search primary failed: {e}, trying fallback...")
+        opts["extractor_args"] = {"youtube": {"player_client": ["android"]}}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+        except Exception as e2:
+            logger.error(f"yt_search fallback also failed: {e2}")
+            return []
+    
     tracks = []
     for e in (r.get("entries") or []):
         if not e: continue
@@ -351,7 +387,7 @@ def artist_songs(artist, limit=50):
 # ─── ПОШУК АЛЬБОМІВ ───────────────────────────────────────────────────────────
 def search_album_tracks(album_name, limit=20):
     try:
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": limit}
+        opts = get_yt_opts({"playlistend": limit})
         with yt_dlp.YoutubeDL(opts) as ydl:
             search_query = f"ytsearch5:{album_name} album playlist"
             r = ydl.extract_info(search_query, download=False)
@@ -394,7 +430,7 @@ def search_album_tracks(album_name, limit=20):
 
 def get_top100():
     try:
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": 100}
+        opts = get_yt_opts({"playlistend": 100})
         with yt_dlp.YoutubeDL(opts) as ydl:
             r = ydl.extract_info(
                 "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI",
@@ -416,16 +452,90 @@ def get_top100():
         return yt_search("top hits 2024", 50)
 
 def download_mp3(url, out_dir, quality="192"):
-    opts = {
+    """
+    Завантажує MP3 з обходом блокувань YouTube.
+    Якщо не вдається — пробує fallback опції.
+    """
+    base_opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
-        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "referer": "https://www.youtube.com/",
+        "headers": {
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        },
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        ydl.extract_info(url, download=True)
-    for f in Path(out_dir).glob("*.mp3"):
-        return str(f)
+    
+    # Спроба 1: web client
+    try:
+        opts = dict(base_opts)
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["web"],
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+        for f in Path(out_dir).glob("*.mp3"):
+            return str(f)
+    except Exception as e:
+        logger.warning(f"Download attempt 1 failed: {e}")
+    
+    # Спроба 2: android client
+    try:
+        opts = dict(base_opts)
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["android"],
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+        for f in Path(out_dir).glob("*.mp3"):
+            return str(f)
+    except Exception as e:
+        logger.warning(f"Download attempt 2 failed: {e}")
+    
+    # Спроба 3: ios client
+    try:
+        opts = dict(base_opts)
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["ios"],
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+        for f in Path(out_dir).glob("*.mp3"):
+            return str(f)
+    except Exception as e:
+        logger.warning(f"Download attempt 3 failed: {e}")
+    
+    # Спроба 4: tv_embedded
+    try:
+        opts = dict(base_opts)
+        opts["extractor_args"] = {
+            "youtube": {
+                "player_client": ["tv_embedded"],
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+        for f in Path(out_dir).glob("*.mp3"):
+            return str(f)
+    except Exception as e:
+        logger.warning(f"Download attempt 4 failed: {e}")
+    
+    logger.error(f"All download attempts failed for {url}")
     return None
 
 async def async_search(query, limit=10):
@@ -442,7 +552,6 @@ async def async_top100():
 
 async def async_download(url, out_dir, quality="192"):
     return await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
-
 # ─── Клавіатури ───────────────────────────────────────────────────────────────
 def main_kb(uid):
     l = get_lang(uid)
@@ -629,14 +738,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download(q.message, url, title, artist, uid, ctx)
         return
 
-    # Всі пісні артиста — ТЕПЕР ВВЕДЕННЯ ІМЕНІ АВТОРА
+    # Всі пісні артиста — ВВЕДЕННЯ ІМЕНІ
     if data == "artist_input":
         set_state(uid, "artist_input")
         prompts = {"uk":"🎤 Введи ім'я артиста:","ru":"🎤 Введи имя артиста:","en":"🎤 Enter artist name:"}
         await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
-    # Скачати 20 пісень — ТЕПЕР ВВЕДЕННЯ ІМЕНІ АВТОРА
+    # Скачати 20 пісень — ВВЕДЕННЯ ІМЕНІ
     if data == "dl20_input":
         set_state(uid, "dl20_input")
         prompts = {"uk":"⬇️ Введи ім'я артиста для завантаження 20 пісень:","ru":"⬇️ Введи имя артиста для скачивания 20 песен:","en":"⬇️ Enter artist name to download 20 songs:"}
@@ -654,7 +763,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.answer("✅ Альбом додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
         return
 
-    # Додати трек в бібліотеку (через хеш)
+    # Додати трек в бібліотеку
     if data.startswith("addlib|"):
         url_id = data[7:]
         cached = get_cached_url(ctx.application.bot_data, url_id)
@@ -697,6 +806,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.application.bot_data.setdefault("quality", {})[uid] = q_val
         await q.answer(f"✅ Якість: {q_val} kbps", show_alert=True)
         return
+
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -804,7 +914,7 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     if nav:
         kb.append(nav)
 
-    # Кнопки артиста — ТЕПЕР ПРОСТО ВВЕДЕННЯ
+    # Кнопки артиста
     if tracks:
         artist = tracks[0]["channel"]
         dl_labels = {"uk":"⬇️ Скачати 20 пісень","ru":"⬇️ Скачать 20 песен","en":"⬇️ Download 20 songs"}
@@ -932,10 +1042,6 @@ async def show_top100_page(msg, uid, tracks, page, edit=False):
 
 # ─── Бібліотека ───────────────────────────────────────────────────────────────
 async def show_library(msg, uid, ctx):
-    """
-    Показує бібліотеку користувача.
-    ctx передається для доступу до bot_data (url_cache)
-    """
     songs = get_library(uid)
     l = get_lang(uid)
     titles = {"uk":"📚 Моя бібліотека","ru":"📚 Моя библиотека","en":"📚 My Library"}
@@ -953,7 +1059,6 @@ async def show_library(msg, uid, ctx):
     kb = []
     for s in songs[:40]:
         icon = "💿" if s["kind"] == "album" else "🎵"
-        # Використовуємо ctx для доступу до bot_data
         url_id = cache_url(ctx.application.bot_data, s["url"], s["title"], s["artist"])
         kb.append([
             InlineKeyboardButton(f"{icon} {s['title'][:35]}", callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"),
@@ -1047,7 +1152,7 @@ async def show_settings(msg, uid, ctx):
     except:
         await msg.reply_text("⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:", reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]), parse_mode="HTML")
 
-# ─── Завантаження ─────────────────────────────────────────────────────────────
+# ─── Завантаження (ОНОВЛЕНО з детальнішою обробкою помилок) ─────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
     l = get_lang(uid)
     status = await msg.reply_text(f"⬇️ Завантажую: <b>{title[:50]}</b>…\n<i>(10–30 сек)</i>", parse_mode="HTML")
@@ -1057,7 +1162,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
         try:
             path = await async_download(url, tmp, quality)
             if not path or not os.path.exists(path):
-                await status.edit_text("❌ Не вдалось. Спробуй іншу пісню.")
+                await status.edit_text("❌ Не вдалось завантажити. Спробуй іншу пісню.\n\n💡 <i>Порада: онови yt-dlp через pip install -U yt-dlp</i>")
                 return
 
             size = os.path.getsize(path) / 1024 / 1024
@@ -1088,11 +1193,24 @@ async def do_download(msg, url, title, artist, uid, ctx):
             add_history(uid, title, artist)
             await status.delete()
 
-        except yt_dlp.utils.DownloadError:
-            await status.edit_text("❌ YouTube заблокував. Спробуй іншу.")
+        except yt_dlp.utils.DownloadError as e:
+            error_msg = str(e).lower()
+            if "age" in error_msg or "restrict" in error_msg:
+                await status.edit_text("❌ Відео має обмеження за віком. Спробуй іншу пісню.")
+            elif "private" in error_msg:
+                await status.edit_text("❌ Приватне відео. Спробуй іншу пісню.")
+            elif "removed" in error_msg or "deleted" in error_msg:
+                await status.edit_text("❌ Відео видалено. Спробуй іншу пісню.")
+            elif "unavailable" in error_msg:
+                await status.edit_text("❌ Відео недоступне в твоїй країні. Спробуй іншу пісню.")
+            elif "sign in" in error_msg or "login" in error_msg:
+                await status.edit_text("❌ YouTube вимагає авторизації.\n\n💡 Спробуй іншу пісню або онови yt-dlp.")
+            else:
+                logger.error(f"DownloadError: {e}")
+                await status.edit_text("❌ YouTube заблокував завантаження.\n\n💡 Спробуй:\n1. Оновити yt-dlp: <code>pip install -U yt-dlp</code>\n2. Спробувати іншу пісню\n3. Перевірити через годину", parse_mode="HTML")
         except Exception as e:
-            logger.error(f"Download: {e}")
-            await status.edit_text("❌ Помилка завантаження.")
+            logger.error(f"Download unexpected error: {e}")
+            await status.edit_text("❌ Помилка завантаження. Спробуй іншу пісню.")
 
 # ─── Адмін ────────────────────────────────────────────────────────────────────
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1190,7 +1308,7 @@ async def handle_admin_input(update, ctx, state, text):
         if len(parts) == 2:
             try:
                 target_id, days = int(parts[0]), int(parts[1])
-                extend_sub(target_id, days)
+                                extend_sub(target_id, days)
                 try:
                     await ctx.bot.send_message(
                         target_id,
