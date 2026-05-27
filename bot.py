@@ -1,7 +1,7 @@
 # ============================================================
-#  MusicLSP — Головний бот (ВИПРАВЛЕНО)
+#  MusicLSP — Головний бот (ВИПРАВЛЕНО v2)
 #  Автор: Lesiv
-#  Фікси: Button_data_invalid + пошук альбомів через YT Music API
+#  Фікси: Button_data_invalid + альбоми + бібліотека + пагінація пошуку
 # ============================================================
 
 import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib
@@ -13,15 +13,6 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import yt_dlp
-
-# Для точного пошуку альбомів
-try:
-    from ytmusicapi import YTMusic
-    YTMUSIC_AVAILABLE = True
-except ImportError:
-    YTMUSIC_AVAILABLE = False
-    logging.warning("ytmusicapi не встановлено. Пошук альбомів буде працювати через звичайний YouTube пошук.")
-    YTMusic = None
 
 
 # ─── Логування ────────────────────────────────────────────────────────────────
@@ -39,6 +30,7 @@ AUTHOR       = "Lesiv"
 BOT_NAME     = "MusicLSP"
 AUTH_BOT     = "@MusicLSPauth_bot"
 REF_LIMIT    = 3   # рефералів на день
+SEARCH_PER_PAGE = 10  # пісень на сторінку пошуку
 PLANS = {
     "week":  {"days": 7,  "price": 0.5,  "label": "7 днів — $0.50"},
     "month": {"days": 30, "price": 2.0,  "label": "30 днів — $2.00"},
@@ -94,7 +86,6 @@ def cache_url(bot_data, url, title="", artist=""):
     bot_data.setdefault("url_cache", {})
     h = url_hash(url)
     bot_data["url_cache"][h] = {"url": url, "title": title, "artist": artist, "ts": datetime.datetime.utcnow().isoformat()}
-    # Чистимо старі записи (старші за 1 годину)
     _clean_url_cache(bot_data)
     return h
 
@@ -361,66 +352,57 @@ def search_all(query, limit=10):
 def artist_songs(artist, limit=50):
     return yt_search(f"{artist} official audio", limit)
 
-# ─── НОВИЙ ПОШУК АЛЬБОМІВ через YouTube Music API ────────────────────────────
-def search_album_ytmusic(album_name, limit=20):
+# ─── ПОШУК АЛЬБОМІВ ───────────────────────────────────────────────────────────
+def search_album_tracks(album_name, limit=20):
     """
-    Шукає альбом через YouTube Music API і повертає СУТО треки з цього альбому.
-    Якщо ytmusicapi не встановлено — повертає порожній список.
+    Шукає треки альбому через YouTube.
+    Спочатку пробує знайти офіційний плейлист альбому,
+    потім — звичайний пошук з фільтрацією.
     """
-    if not YTMUSIC_AVAILABLE or YTMusic is None:
-        return []
-    
+    # Спроба 1: пошук плейлиста альбому
     try:
-        yt = YTMusic()
-        # Шукаємо альбоми
-        results = yt.search(album_name, filter="albums", limit=5)
-        if not results:
-            return []
-        
-        # Беремо перший знайдений альбом
-        album = results[0]
-        album_id = album.get("browseId")
-        if not album_id:
-            return []
-        
-        # Отримуємо деталі альбому з треками
-        album_details = yt.get_album(album_id)
-        tracks = []
-        
-        for track in album_details.get("tracks", [])[:limit]:
-            video_id = track.get("videoId")
-            if not video_id:
-                continue
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": limit}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            search_query = f"ytsearch5:{album_name} album playlist"
+            r = ydl.extract_info(search_query, download=False)
             
-            dur = track.get("duration_seconds") or track.get("lengthSeconds", 0)
-            tracks.append({
-                "title": track.get("title", "Unknown"),
-                "url": f"https://www.youtube.com/watch?v={video_id}",
-                "id": video_id,
-                "duration": fmt_dur(dur),
-                "channel": track.get("artists", [{}])[0].get("name", "—") if track.get("artists") else "—",
-                "source": "youtube",
-                "album": album_details.get("title", album_name),
-            })
-        
-        return tracks
+            for entry in (r.get("entries") or []):
+                if not entry: continue
+                title_lower = entry.get("title", "").lower()
+                if "playlist" in title_lower or "album" in title_lower:
+                    playlist_url = entry.get("url") or f"https://www.youtube.com/playlist?list={entry.get('id', '')}"
+                    if "playlist?list=" in playlist_url:
+                        try:
+                            pr = ydl.extract_info(playlist_url, download=False)
+                            tracks = []
+                            for i, e in enumerate(pr.get("entries") or []):
+                                if not e: continue
+                                tracks.append({
+                                    "title": e.get("title", "Unknown"),
+                                    "url": f"https://www.youtube.com/watch?v={e['id']}",
+                                    "id": e["id"],
+                                    "duration": fmt_dur(e.get("duration", 0)),
+                                    "channel": e.get("channel") or e.get("uploader") or "—",
+                                    "source": "youtube",
+                                })
+                            if len(tracks) >= 3:
+                                return tracks[:limit]
+                        except:
+                            continue
     except Exception as ex:
-        logger.error(f"YTMusic album search error: {ex}")
-        return []
-
-def search_album(album_name, limit=20):
-    """
-    Шукає пісні альбому. Спочатку пробує YT Music API, якщо не вдається — fallback на звичайний пошук.
-    """
-    # Спочатку пробуємо точний пошук через YT Music
-    ytm_tracks = search_album_ytmusic(album_name, limit)
-    if ytm_tracks:
-        logger.info(f"Album '{album_name}' found via YT Music: {len(ytm_tracks)} tracks")
-        return ytm_tracks
+        logger.warning(f"Album playlist search failed: {ex}")
     
-    # Fallback: звичайний пошук (як було раніше)
-    logger.info(f"Album '{album_name}' not found via YT Music, using fallback search")
-    return yt_search(f"{album_name} full album", limit)
+    # Спроба 2: звичайний пошук з фільтрацією
+    tracks = yt_search(f"{album_name} album", limit + 10)
+    
+    filtered = []
+    for t in tracks:
+        title_lower = t["title"].lower()
+        if any(bad in title_lower for bad in ["reaction", "review", "cover", "live", "concert"]):
+            continue
+        filtered.append(t)
+    
+    return filtered[:limit]
 
 def get_top100():
     try:
@@ -465,7 +447,7 @@ async def async_artist(artist, limit=50):
     return await asyncio.get_event_loop().run_in_executor(None, artist_songs, artist, limit)
 
 async def async_album(name, limit=20):
-    return await asyncio.get_event_loop().run_in_executor(None, search_album, name, limit)
+    return await asyncio.get_event_loop().run_in_executor(None, search_album_tracks, name, limit)
 
 async def async_top100():
     return await asyncio.get_event_loop().run_in_executor(None, get_top100)
@@ -547,7 +529,6 @@ async def show_welcome(msg, uid):
     text = tx("welcome", l, bot=BOT_NAME, trial=TRIAL_DAYS, author=AUTHOR)
     kb, _ = main_kb(uid)
     await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
-
 # ─── Callbacks ────────────────────────────────────────────────────────────────
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -583,11 +564,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:albums":
         set_state(uid, "album_search")
         prompts = {"uk":"💿 Введи назву альбому (наприклад: «Баста Гуф 2010»):","ru":"💿 Введи название альбома:","en":"💿 Enter album name:","de":"💿 Albumname eingeben:","fr":"💿 Entrez le nom de l'album:","es":"💿 Ingresa el nombre del álbum:","pl":"💿 Wprowadź nazwę albumu:","tr":"💿 Albüm adını girin:","ar":"💿 أدخل اسم الألبوم:","zh":"💿 输入专辑名称:"}
-        # Додаємо підказку про ytmusicapi
-        hint = ""
-        if not YTMUSIC_AVAILABLE:
-            hint = "\n\n⚠️ <i>Для точного пошуку альбомів встанови: pip install ytmusicapi</i>"
-        await q.message.edit_text(prompts.get(l, prompts["en"]) + hint, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
     # Топ 100
@@ -655,7 +632,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         title = parts[2] if len(parts) > 2 else "трек"
         artist = parts[3] if len(parts) > 3 else ""
         
-        # Отримуємо реальний URL з кешу
         cached = get_cached_url(ctx.application.bot_data, url_id)
         url = cached.get("url", "")
         if not url:
@@ -681,7 +657,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|", 2)
         album_name = parts[1]
         album_url_id = parts[2] if len(parts) > 2 else ""
-        # Отримуємо URL з кешу
         cached = get_cached_url(ctx.application.bot_data, album_url_id)
         album_url = cached.get("url", "")
         added = add_library(uid, album_name, "Album", album_url, kind="album")
@@ -690,7 +665,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Додати трек в бібліотеку (через хеш)
     if data.startswith("addlib|"):
-        url_id = data[7:]  # тепер це хеш, не URL
+        url_id = data[7:]
         cached = get_cached_url(ctx.application.bot_data, url_id)
         url = cached.get("url", "")
         title = cached.get("title", "Unknown")
@@ -715,6 +690,14 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         page = int(data[6:])
         tracks = ctx.application.bot_data.get("top100", [])
         await show_top100_page(q.message, uid, tracks, page, edit=True)
+        return
+
+    # Пагінація пошуку
+    if data.startswith("searchp|"):
+        parts = data.split("|", 2)
+        query = parts[1]
+        page = int(parts[2]) if len(parts) > 2 else 0
+        await do_search_paged(q.message, query, uid, ctx, page, edit=True)
         return
 
     # Якість
@@ -770,46 +753,77 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await handle_admin_input(update, ctx, state, text)
         return
 
-    # Звичайний пошук
+    # Звичайний пошук з пагінацією
     set_state(uid, "")
     if not has_access(uid):
         await update.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
-    await do_search(update, text, uid, ctx)
+    await do_search_paged(update, text, uid, ctx, page=0, edit=False)
 
-# ─── Пошук ────────────────────────────────────────────────────────────────────
-async def do_search(update, query, uid, ctx):
+# ─── Пошук з пагінацією ───────────────────────────────────────────────────────
+async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
+    """
+    Пошук з пагінацією. page=0 — перша сторінка.
+    """
     l = get_lang(uid)
-    msg = await update.message.reply_text(f"🔍 <b>{query}</b>…", parse_mode="HTML")
-    tracks = await async_search(query, 10)
+    offset = page * SEARCH_PER_PAGE
+    limit = SEARCH_PER_PAGE + 5
+    
+    if edit:
+        msg = update_or_msg
+        await msg.edit_text(f"🔍 <b>{query}</b> (стор. {page+1})…", parse_mode="HTML")
+    else:
+        msg = await update_or_msg.message.reply_text(f"🔍 <b>{query}</b>…", parse_mode="HTML")
+    
+    all_tracks = await async_search(query, limit=30)
+    
+    if not all_tracks:
+        await msg.edit_text("😔 Нічого не знайдено.")
+        return
 
-    if not tracks:
-        await msg.edit_text("😔 Нічого не знайдено."); return
+    ck = f"search_{uid}_{msg.message_id}"
+    ctx.application.bot_data.setdefault("cache", {})[ck] = all_tracks
 
-    ck = f"s_{uid}_{msg.message_id}"
-    ctx.application.bot_data.setdefault("cache", {})[ck] = tracks
+    start = page * SEARCH_PER_PAGE
+    end = start + SEARCH_PER_PAGE
+    tracks = all_tracks[start:end]
+    has_more = len(all_tracks) > end
 
     kb = []
     for i, t in enumerate(tracks):
+        global_idx = start + i
         icon = "🎵" if t.get("source") == "youtube" else "☁️"
-        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:42]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
+        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:42]} ({t['duration']})", callback_data=f"dl|{global_idx}|{ck}")])
 
-    artist = tracks[0]["channel"]
-    dl_labels = {"uk":"⬇️ Скачати 20 пісень","ru":"⬇️ Скачать 20 песен","en":"⬇️ Download 20 songs"}
-    all_labels = {"uk":"🎤 Всі пісні артиста","ru":"🎤 Все песни артиста","en":"🎤 All artist songs"}
-    kb.append([
-        InlineKeyboardButton(all_labels.get(l, all_labels["en"]), callback_data=f"artist|{artist}"),
-        InlineKeyboardButton(dl_labels.get(l, dl_labels["en"]), callback_data=f"dl20|{artist}"),
-    ])
+    # Кнопки навігації
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Попередня", callback_data=f"searchp|{query}|{page-1}"))
+    if has_more:
+        nav.append(InlineKeyboardButton("➡️ Наступна", callback_data=f"searchp|{query}|{page+1}"))
+    if nav:
+        kb.append(nav)
+
+    # Кнопки артиста
+    if tracks:
+        artist = tracks[0]["channel"]
+        dl_labels = {"uk":"⬇️ Скачати 20 пісень","ru":"⬇️ Скачать 20 песен","en":"⬇️ Download 20 songs"}
+        all_labels = {"uk":"🎤 Всі пісні артиста","ru":"🎤 Все песни артиста","en":"🎤 All artist songs"}
+        kb.append([
+            InlineKeyboardButton(all_labels.get(l, all_labels["en"]), callback_data=f"artist|{artist}"),
+            InlineKeyboardButton(dl_labels.get(l, dl_labels["en"]), callback_data=f"dl20|{artist}"),
+        ])
+    
     kb.append([back_btn(uid)])
 
-    await msg.edit_text(
-        f"🎶 <b>{query}</b> — {len(tracks)} результатів\n\nОбери пісню 👇",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
-    )
+    text = f"🎶 <b>{query}</b> — {start+1}-{min(end, len(all_tracks))} з {len(all_tracks)}\n\nОбери пісню 👇"
+    
+    if edit:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    else:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Альбом ───────────────────────────────────────────────────────────────────
 async def do_album_search(update, album_name, uid, ctx):
-    l = get_lang(uid)
     msg = await update.message.reply_text(f"💿 Шукаю альбом: <b>{album_name}</b>…", parse_mode="HTML")
     tracks = await async_album(album_name, 20)
 
@@ -823,21 +837,16 @@ async def do_album_search(update, album_name, uid, ctx):
     for i, t in enumerate(tracks):
         kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
 
-    # Кнопка "Додати альбом в бібліотеку" — використовуємо хеш замість URL
     first_url = tracks[0]["url"] if tracks else ""
     url_id = cache_url(ctx.application.bot_data, first_url, album_name, "Album")
     
     add_labels = {"uk":"📚 Додати альбом в бібліотеку","ru":"📚 Добавить альбом в библиотеку","en":"📚 Add album to library"}
+    l = get_lang(uid)
     kb.append([InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addalbum|{album_name}|{url_id}")])
     kb.append([back_btn(uid)])
 
-    # Показуємо звідки результати
-    source_info = ""
-    if tracks and tracks[0].get("album"):
-        source_info = f"\n\n📀 <i>Знайдено: {tracks[0]['album']}</i>"
-    
     await msg.edit_text(
-        f"💿 <b>{album_name}</b> — {len(tracks)} треків{source_info}\n\nОбери пісню 👇",
+        f"💿 <b>{album_name}</b> — {len(tracks)} треків\n\nОбери пісню 👇",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
     )
 
@@ -850,7 +859,6 @@ async def show_artist(msg, artist, uid, ctx):
 
     kb = []
     for t in tracks:
-        # Використовуємо хеш замість прямого URL
         url_id = cache_url(ctx.application.bot_data, t["url"], t["title"], t.get("channel", ""))
         kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t['channel'][:20]}")])
     kb.append([back_btn(uid)])
@@ -903,7 +911,6 @@ async def show_top100_page(msg, uid, tracks, page, edit=False):
     kb = []
     for i, t in enumerate(chunk):
         rank = t.get("rank", start + i + 1)
-        # Використовуємо хеш замість прямого URL
         url_id = cache_url(msg.get_bot().bot_data if hasattr(msg, 'get_bot') else {}, t["url"], t["title"], "")
         kb.append([InlineKeyboardButton(f"#{rank} {t['title'][:40]}", callback_data=f"dlurl|{url_id}|{t['title'][:30]}")])
 
@@ -921,19 +928,27 @@ async def show_top100_page(msg, uid, tracks, page, edit=False):
 
 # ─── Бібліотека ───────────────────────────────────────────────────────────────
 async def show_library(msg, uid):
+    """
+    Показує бібліотеку користувача.
+    Використовуємо reply_text замість edit_text, щоб уникнути проблем з типом повідомлення.
+    """
     songs = get_library(uid)
     l = get_lang(uid)
     titles = {"uk":"📚 Моя бібліотека","ru":"📚 Моя библиотека","en":"📚 My Library"}
     empty = {"uk":"Поки порожньо. Шукай музику і додавай!","ru":"Пока пусто. Ищи музыку и добавляй!","en":"Empty. Search and add songs!"}
 
     if not songs:
-        await msg.edit_text(f"{titles.get(l,titles['en'])}\n\n{empty.get(l,empty['en'])}", reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        text = f"{titles.get(l,titles['en'])}\n\n{empty.get(l,empty['en'])}"
+        kb = InlineKeyboardMarkup([[back_btn(uid)]])
+        try:
+            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     kb = []
     for s in songs[:40]:
         icon = "💿" if s["kind"] == "album" else "🎵"
-        # Використовуємо хеш замість прямого URL
         url_id = cache_url(msg.get_bot().bot_data if hasattr(msg, 'get_bot') else {}, s["url"], s["title"], s["artist"])
         kb.append([
             InlineKeyboardButton(f"{icon} {s['title'][:35]}", callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"),
@@ -941,7 +956,12 @@ async def show_library(msg, uid):
         ])
     kb.append([back_btn(uid)])
 
-    await msg.edit_text(f"{titles.get(l,titles['en'])} — {len(songs)} записів:", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    text = f"{titles.get(l,titles['en'])} — {len(songs)} записів:"
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"Library edit_text failed, using reply_text: {e}")
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Профіль ──────────────────────────────────────────────────────────────────
 async def show_profile(msg, uid):
@@ -963,7 +983,10 @@ async def show_profile(msg, uid):
         f"• Рефералів: {ref['count']}\n"
         f"• Зароблено днів: {ref['days']}"
     )
-    await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+    except:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
 # ─── Підписка ─────────────────────────────────────────────────────────────────
 async def show_sub(msg, uid):
@@ -982,7 +1005,10 @@ async def show_sub(msg, uid):
          InlineKeyboardButton("🎟 Промокод", callback_data="sub:promo")],
         [back_btn(uid)],
     ]
-    await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Реферал ──────────────────────────────────────────────────────────────────
 async def show_ref(msg, uid, ctx):
@@ -996,7 +1022,10 @@ async def show_ref(msg, uid, ctx):
         f"📅 Зароблено днів: <b>{stats['days']}</b>\n\n"
         f"🔗 Твоє посилання:\n<code>{link}</code>"
     )
-    await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+    except:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
 # ─── Налаштування ─────────────────────────────────────────────────────────────
 async def show_settings(msg, uid, ctx):
@@ -1008,7 +1037,10 @@ async def show_settings(msg, uid, ctx):
         if len(row) == 2: lang_kb.append(row); row = []
     if row: lang_kb.append(row)
     q_row = [InlineKeyboardButton(f"{'✅' if q==cur_q else ''}{q}kbps", callback_data=f"quality|{q}") for q in ["128","192","320"]]
-    await msg.edit_text("⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:", reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]), parse_mode="HTML")
+    try:
+        await msg.edit_text("⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:", reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]), parse_mode="HTML")
+    except:
+        await msg.reply_text("⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:", reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]), parse_mode="HTML")
 
 # ─── Завантаження ─────────────────────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
@@ -1030,7 +1062,6 @@ async def do_download(msg, url, title, artist, uid, ctx):
 
             await status.edit_text("📤 Відправляю…")
             
-            # ✅ Використовуємо хеш замість URL в callback_data
             url_id = cache_url(ctx.application.bot_data, url, title, artist)
             
             add_labels = {"uk":"📚 До бібліотеки","ru":"📚 В библиотеку","en":"📚 Add to Library"}
@@ -1150,13 +1181,11 @@ async def handle_admin_input(update, ctx, state, text):
             await update.message.reply_text("❌ Введи число днів.")
 
     elif state == "adm:give":
-        # Формат: USER_ID ДНІВ
         parts = text.split()
         if len(parts) == 2:
             try:
                 target_id, days = int(parts[0]), int(parts[1])
                 extend_sub(target_id, days)
-                # Повідомляємо юзера
                 try:
                     await ctx.bot.send_message(
                         target_id,
