@@ -1,7 +1,7 @@
 # ============================================================
-#  MusicLSP — Головний бот (ВИПРАВЛЕНО v2)
+#  MusicLSP — Головний бот (ВИПРАВЛЕНО v3)
 #  Автор: Lesiv
-#  Фікси: Button_data_invalid + альбоми + бібліотека + пагінація пошуку
+#  Фікси: бібліотека + додавання треків + артисти + топ100 + стабільність
 # ============================================================
 
 import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib
@@ -29,8 +29,8 @@ DEF_QUALITY  = "192"
 AUTHOR       = "Lesiv"
 BOT_NAME     = "MusicLSP"
 AUTH_BOT     = "@MusicLSPauth_bot"
-REF_LIMIT    = 3   # рефералів на день
-SEARCH_PER_PAGE = 10  # пісень на сторінку пошуку
+REF_LIMIT    = 3
+SEARCH_PER_PAGE = 10
 PLANS = {
     "week":  {"days": 7,  "price": 0.5,  "label": "7 днів — $0.50"},
     "month": {"days": 30, "price": 2.0,  "label": "30 днів — $2.00"},
@@ -76,13 +76,11 @@ def tx(key, lang, **kw):
     t = s.get(lang) or s.get("en") or f"[{key}]"
     return t.format(**kw) if kw else t
 
-# ─── Хелпери для callback_data (фікс Button_data_invalid) ────────────────────
+# ─── Хелпери для callback_data ────────────────────────────────────────────────
 def url_hash(url):
-    """Повертає короткий хеш URL (8 символів) для використання в callback_data"""
     return hashlib.md5(url.encode('utf-8')).hexdigest()[:8]
 
 def cache_url(bot_data, url, title="", artist=""):
-    """Зберігає URL в кеші і повертає його хеш"""
     bot_data.setdefault("url_cache", {})
     h = url_hash(url)
     bot_data["url_cache"][h] = {"url": url, "title": title, "artist": artist, "ts": datetime.datetime.utcnow().isoformat()}
@@ -90,11 +88,9 @@ def cache_url(bot_data, url, title="", artist=""):
     return h
 
 def get_cached_url(bot_data, h):
-    """Отримує URL з кешу по хешу"""
     return bot_data.get("url_cache", {}).get(h, {})
 
 def _clean_url_cache(bot_data):
-    """Чистить старі записи з кешу URL"""
     cache = bot_data.get("url_cache", {})
     now = datetime.datetime.utcnow()
     to_delete = []
@@ -354,12 +350,6 @@ def artist_songs(artist, limit=50):
 
 # ─── ПОШУК АЛЬБОМІВ ───────────────────────────────────────────────────────────
 def search_album_tracks(album_name, limit=20):
-    """
-    Шукає треки альбому через YouTube.
-    Спочатку пробує знайти офіційний плейлист альбому,
-    потім — звичайний пошук з фільтрацією.
-    """
-    # Спроба 1: пошук плейлиста альбому
     try:
         opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "playlistend": limit}
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -392,9 +382,7 @@ def search_album_tracks(album_name, limit=20):
     except Exception as ex:
         logger.warning(f"Album playlist search failed: {ex}")
     
-    # Спроба 2: звичайний пошук з фільтрацією
     tracks = yt_search(f"{album_name} album", limit + 10)
-    
     filtered = []
     for t in tracks:
         title_lower = t["title"].lower()
@@ -529,6 +517,7 @@ async def show_welcome(msg, uid):
     text = tx("welcome", l, bot=BOT_NAME, trial=TRIAL_DAYS, author=AUTHOR)
     kb, _ = main_kb(uid)
     await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+
 # ─── Callbacks ────────────────────────────────────────────────────────────────
 async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -547,10 +536,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Головне меню
     if data == "m:home":
         kb, _ = main_kb(uid)
-        await q.message.edit_text(
-            f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇",
-            reply_markup=kb, parse_mode="HTML"
-        )
+        try:
+            await q.message.edit_text(f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇", reply_markup=kb, parse_mode="HTML")
+        except:
+            await q.message.reply_text(f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇", reply_markup=kb, parse_mode="HTML")
         return
 
     # Пошук
@@ -574,7 +563,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Бібліотека
     if data == "m:library":
-        await show_library(q.message, uid)
+        await show_library(q.message, uid, ctx)
         return
 
     # Профіль
@@ -640,16 +629,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download(q.message, url, title, artist, uid, ctx)
         return
 
-    # Всі пісні артиста
-    if data.startswith("artist|"):
-        await show_artist(q.message, data[7:], uid, ctx)
+    # Всі пісні артиста — ТЕПЕР ВВЕДЕННЯ ІМЕНІ АВТОРА
+    if data == "artist_input":
+        set_state(uid, "artist_input")
+        prompts = {"uk":"🎤 Введи ім'я артиста:","ru":"🎤 Введи имя артиста:","en":"🎤 Enter artist name:"}
+        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
-    # 20 пісень артиста
-    if data.startswith("dl20|"):
-        if not has_access(uid):
-            await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
-        await batch_download(q.message, data[5:], uid, ctx)
+    # Скачати 20 пісень — ТЕПЕР ВВЕДЕННЯ ІМЕНІ АВТОРА
+    if data == "dl20_input":
+        set_state(uid, "dl20_input")
+        prompts = {"uk":"⬇️ Введи ім'я артиста для завантаження 20 пісень:","ru":"⬇️ Введи имя артиста для скачивания 20 песен:","en":"⬇️ Enter artist name to download 20 songs:"}
+        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
     # Додати альбом в бібліотеку
@@ -682,7 +673,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Видалити з бібліотеки
     if data.startswith("libdel|"):
         del_library(uid, int(data[7:]))
-        await show_library(q.message, uid)
+        await show_library(q.message, uid, ctx)
         return
 
     # Топ 100 сторінка
@@ -706,7 +697,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.application.bot_data.setdefault("quality", {})[uid] = q_val
         await q.answer(f"✅ Якість: {q_val} kbps", show_alert=True)
         return
-
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -748,6 +738,22 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_album_search(update, text, uid, ctx)
         return
 
+    # ВВЕДЕННЯ АРТИСТА — всі пісні
+    if state == "artist_input":
+        set_state(uid, "")
+        if not has_access(uid):
+            await update.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
+        await show_artist(update.message, text, uid, ctx)
+        return
+
+    # ВВЕДЕННЯ АРТИСТА — скачати 20 пісень
+    if state == "dl20_input":
+        set_state(uid, "")
+        if not has_access(uid):
+            await update.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
+        await batch_download(update.message, text, uid, ctx)
+        return
+
     # Адмін введення
     if uid == ADMIN_ID and state.startswith("adm:"):
         await handle_admin_input(update, ctx, state, text)
@@ -761,12 +767,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 # ─── Пошук з пагінацією ───────────────────────────────────────────────────────
 async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
-    """
-    Пошук з пагінацією. page=0 — перша сторінка.
-    """
     l = get_lang(uid)
-    offset = page * SEARCH_PER_PAGE
-    limit = SEARCH_PER_PAGE + 5
     
     if edit:
         msg = update_or_msg
@@ -803,14 +804,14 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     if nav:
         kb.append(nav)
 
-    # Кнопки артиста
+    # Кнопки артиста — ТЕПЕР ПРОСТО ВВЕДЕННЯ
     if tracks:
         artist = tracks[0]["channel"]
         dl_labels = {"uk":"⬇️ Скачати 20 пісень","ru":"⬇️ Скачать 20 песен","en":"⬇️ Download 20 songs"}
         all_labels = {"uk":"🎤 Всі пісні артиста","ru":"🎤 Все песни артиста","en":"🎤 All artist songs"}
         kb.append([
-            InlineKeyboardButton(all_labels.get(l, all_labels["en"]), callback_data=f"artist|{artist}"),
-            InlineKeyboardButton(dl_labels.get(l, dl_labels["en"]), callback_data=f"dl20|{artist}"),
+            InlineKeyboardButton(all_labels.get(l, all_labels["en"]), callback_data="artist_input"),
+            InlineKeyboardButton(dl_labels.get(l, dl_labels["en"]), callback_data="dl20_input"),
         ])
     
     kb.append([back_btn(uid)])
@@ -897,7 +898,10 @@ async def batch_download(msg, artist, uid, ctx):
 
 # ─── Топ 100 ──────────────────────────────────────────────────────────────────
 async def show_top100(msg, uid, ctx):
-    status = await msg.edit_text("📊 Завантажую Топ 100…")
+    try:
+        status = await msg.edit_text("📊 Завантажую Топ 100…")
+    except:
+        status = await msg.reply_text("📊 Завантажую Топ 100…")
     tracks = await async_top100()
     ctx.application.bot_data["top100"] = tracks
     await show_top100_page(status, uid, tracks, 0, edit=True)
@@ -927,10 +931,10 @@ async def show_top100_page(msg, uid, tracks, page, edit=False):
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Бібліотека ───────────────────────────────────────────────────────────────
-async def show_library(msg, uid):
+async def show_library(msg, uid, ctx):
     """
     Показує бібліотеку користувача.
-    Використовуємо reply_text замість edit_text, щоб уникнути проблем з типом повідомлення.
+    ctx передається для доступу до bot_data (url_cache)
     """
     songs = get_library(uid)
     l = get_lang(uid)
@@ -949,7 +953,8 @@ async def show_library(msg, uid):
     kb = []
     for s in songs[:40]:
         icon = "💿" if s["kind"] == "album" else "🎵"
-        url_id = cache_url(msg.get_bot().bot_data if hasattr(msg, 'get_bot') else {}, s["url"], s["title"], s["artist"])
+        # Використовуємо ctx для доступу до bot_data
+        url_id = cache_url(ctx.application.bot_data, s["url"], s["title"], s["artist"])
         kb.append([
             InlineKeyboardButton(f"{icon} {s['title'][:35]}", callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"),
             InlineKeyboardButton("🗑", callback_data=f"libdel|{s['id']}")
