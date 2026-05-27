@@ -1063,7 +1063,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Невірний або вичерпаний промокод.")
         return
 
-    # === НОВЕ: Пошук альбому через MusicBrainz ===
+    # Пошук альбому через MusicBrainz
     if state == "album_search":
         set_state(uid, "")
         if not has_access(uid):
@@ -1154,16 +1154,14 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     else:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── === НОВЕ: Пошук альбому через MusicBrainz === ──────────────────────────
+# ─── Пошук альбому через MusicBrainz ──────────────────────────────────────────
 async def do_album_search_mb(update, query, uid, ctx):
-    """Пошук альбому з повною інформацією через MusicBrainz"""
     l = get_lang(uid)
     msg = await update.message.reply_text(f"💿 Шукаю альбом: <b>{query}</b>…", parse_mode="HTML")
     
     album_data = await async_album_info(query)
     
     if not album_data or not album_data.get("tracks"):
-        # Fallback на старий пошук
         await msg.edit_text(
             "😔 Альбом не знайдено в базі.\n\nСпробую знайти через YouTube…",
             parse_mode="HTML"
@@ -1171,12 +1169,10 @@ async def do_album_search_mb(update, query, uid, ctx):
         await do_album_search_fallback(update, query, uid, ctx, msg)
         return
     
-    # Генеруємо ключ кешу
     album_ck = f"album_{uid}_{msg.message_id}"
     ctx.application.bot_data.setdefault("album_cache", {})[album_ck] = album_data
     ctx.application.bot_data["last_album_ck"] = album_ck
     
-    # Формуємо повідомлення
     tags_str = ", ".join(album_data.get("tags", [])) if album_data.get("tags") else ""
     wiki_text = album_data.get("wiki", "")[:200] + "..." if len(album_data.get("wiki", "")) > 200 else album_data.get("wiki", "")
     
@@ -1199,29 +1195,24 @@ async def do_album_search_mb(update, query, uid, ctx):
         text += f"\n📖 <i>{wiki_text}</i>\n"
     text += f"\n🎵 <b>Треклист:</b>"
     
-    # Кнопки треків (по 1 на рядок, макс 15 для компактності)
     kb = []
     show_tracks = album_data["tracks"][:15]
     for i, track in enumerate(show_tracks):
         btn_text = f"{track['position'] or i+1}. {track['title'][:35]} ({track['duration']})"
         kb.append([InlineKeyboardButton(btn_text, callback_data=f"albumtrack|{album_ck}|{i}")])
     
-    # Якщо треків більше 15 — кнопка "Ще треки"
     if len(album_data["tracks"]) > 15:
         kb.append([InlineKeyboardButton(f"➕ Ще {len(album_data['tracks']) - 15} треків", callback_data=f"albummore|{album_ck}|15")])
     
-    # Кнопки дій
     action_row = []
     action_row.append(InlineKeyboardButton("📚 До бібліотеки", callback_data=f"addpl|{album_ck}"))
     
-    # ZIP тільки для платних
     if has_access(uid):
         action_row.append(InlineKeyboardButton("⬇️ ZIP всі", callback_data="albumzip"))
     
     kb.append(action_row)
     kb.append([back_btn(uid)])
     
-    # Відправляємо з обкладинкою якщо є
     image_url = album_data.get("image", "")
     if image_url:
         try:
@@ -1239,7 +1230,6 @@ async def do_album_search_mb(update, query, uid, ctx):
     await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 async def do_album_search_fallback(update, query, uid, ctx, msg):
-    """Fallback старий пошук альбому через YouTube"""
     tracks = await async_search(f"{query} album", limit=20)
     if not tracks:
         await msg.edit_text("😔 Альбом не знайдено.")
@@ -1263,9 +1253,8 @@ async def do_album_search_fallback(update, query, uid, ctx, msg):
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
     )
 
-# ─── НОВЕ: Завантаження ZIP альбому ───────────────────────────────────────────
+# ─── Завантаження ZIP альбому ────────────────────────────────────────────────
 async def do_download_album_zip(msg, album_data, uid, ctx):
-    """Створює та відправляє ZIP-архів альбому"""
     l = get_lang(uid)
     status = await msg.reply_text("⬇️ Створюю ZIP-архів…\n<i>Це може зайняти кілька хвилин</i>", parse_mode="HTML")
     
@@ -1278,9 +1267,8 @@ async def do_download_album_zip(msg, album_data, uid, ctx):
             await status.edit_text("❌ Не вдалось завантажити жодного треку.")
             return
         
-        # Перевіряємо розмір
         size_mb = len(zip_buffer.getvalue()) / 1024 / 1024
-        if size_mb > 50:  # Telegram ліміт 50MB
+        if size_mb > 50:
             await status.edit_text(f"❌ Архів {size_mb:.1f}МБ — завеликий для Telegram.")
             return
         
@@ -1343,10 +1331,6 @@ async def batch_download(msg, artist, uid, ctx):
                     add_history(uid, t["title"], t["channel"])
                     ok += 1
             except Exception as e:
-                logger.error(f"Batch: {e}")
-    await status.edit_text(f  Ось повна 3 частина (продовження):
-
-```python
                 logger.error(f"Batch: {e}")
     await status.edit_text(f"✅ Завантажено {ok} з {len(tracks)} пісень!")
 
