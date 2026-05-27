@@ -83,6 +83,7 @@ def spotify_request(endpoint):
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 401:
+            global _spotify_token
             _spotify_token = None
             token = get_spotify_token()
             if token:
@@ -737,7 +738,7 @@ def find_youtube_for_track(track_name, artist_name):
     query = f"{artist_name} {track_name} audio"
     results = yt_search(query, limit=3)
     if results:
-        return results[0]  # Повертаємо перший результат
+        return results[0]
     return None
 
 async def async_find_youtube(track_name, artist_name):
@@ -748,24 +749,24 @@ def main_kb(uid):
     l = get_lang(uid)
     btn = lambda text, data: InlineKeyboardButton(text, callback_data=data)
     labels = {
-        "uk": ["🔍 Пошук", "💿 Альбоми", "📊 Топ 100", "📚 Бібліотека", "👤 Профіль", "💎 Підписка", "🎁 Реферал", "⚙️ Налаштування"],
-        "ru": ["🔍 Поиск", "💿 Альбомы", "📊 Топ 100", "📚 Библиотека", "👤 Профиль", "💎 Подписка", "🎁 Реферал", "⚙️ Настройки"],
-        "en": ["🔍 Search", "💿 Albums", "📊 Top 100", "📚 Library", "👤 Profile", "💎 Subscription", "🎁 Referral", "⚙️ Settings"],
-        "de": ["🔍 Suchen", "💿 Alben", "📊 Top 100", "📚 Bibliothek", "👤 Profil", "💎 Abo", "🎁 Empfehlung", "⚙️ Einstellungen"],
-        "fr": ["🔍 Chercher", "💿 Albums", "📊 Top 100", "📚 Bibliothèque", "👤 Profil", "💎 Abonnement", "🎁 Parrainage", "⚙️ Paramètres"],
-        "es": ["🔍 Buscar", "💿 Álbumes", "📊 Top 100", "📚 Biblioteca", "👤 Perfil", "💎 Suscripción", "🎁 Referido", "⚙️ Ajustes"],
-        "pl": ["🔍 Szukaj", "💿 Albumy", "📊 Top 100", "📚 Biblioteka", "👤 Profil", "💎 Subskrypcja", "🎁 Referral", "⚙️ Ustawienia"],
-        "tr": ["🔍 Ara", "💿 Albümler", "📊 Top 100", "📚 Kütüphane", "👤 Profil", "💎 Abonelik", "🎁 Referans", "⚙️ Ayarlar"],
-        "ar": ["🔍 بحث", "💿 ألبومات", "📊 أفضل 100", "📚 مكتبة", "👤 ملف", "💎 اشتراك", "🎁 إحالة", "⚙️ إعدادات"],
-        "zh": ["🔍 搜索", "💿 专辑", "📊 前100", "📚 音乐库", "👤 个人", "💎 订阅", "🎁 推荐", "⚙️ 设置"],
+        "uk": ["🔍 Пошук", "💿 Альбоми", "📚 Бібліотека", "👤 Профіль", "💎 Підписка", "🎁 Реферал", "⚙️ Налаштування"],
+        "ru": ["🔍 Поиск", "💿 Альбомы", "📚 Библиотека", "👤 Профиль", "💎 Подписка", "🎁 Реферал", "⚙️ Настройки"],
+        "en": ["🔍 Search", "💿 Albums", "📚 Library", "👤 Profile", "💎 Subscription", "🎁 Referral", "⚙️ Settings"],
+        "de": ["🔍 Suchen", "💿 Alben", "📚 Bibliothek", "👤 Profil", "💎 Abo", "🎁 Empfehlung", "⚙️ Einstellungen"],
+        "fr": ["🔍 Chercher", "💿 Albums", "📚 Bibliothèque", "👤 Profil", "💎 Abonnement", "🎁 Parrainage", "⚙️ Paramètres"],
+        "es": ["🔍 Buscar", "💿 Álbumes", "📚 Biblioteca", "👤 Perfil", "💎 Suscripción", "🎁 Referido", "⚙️ Ajustes"],
+        "pl": ["🔍 Szukaj", "💿 Albumy", "📚 Biblioteka", "👤 Profil", "💎 Subskrypcja", "🎁 Referral", "⚙️ Ustawienia"],
+        "tr": ["🔍 Ara", "💿 Albümler", "📚 Kütüphane", "👤 Profil", "💎 Abonelik", "🎁 Referans", "⚙️ Ayarlar"],
+        "ar": ["🔍 بحث", "💿 ألبومات", "📚 مكتبة", "👤 ملف", "💎 اشتراك", "🎁 إحالة", "⚙️ إعدادات"],
+        "zh": ["🔍 搜索", "💿 专辑", "📚 音乐库", "👤 个人", "💎 订阅", "🎁 推荐", "⚙️ 设置"],
     }
     lb = labels.get(l, labels["en"])
     back_label = {"uk":"◀️ Назад","ru":"◀️ Назад","en":"◀️ Back","de":"◀️ Zurück","fr":"◀️ Retour","es":"◀️ Volver","pl":"◀️ Wróć","tr":"◀️ Geri","ar":"◀️ رجوع","zh":"◀️ 返回"}.get(l,"◀️ Back")
     return InlineKeyboardMarkup([
         [btn(lb[0], "m:search"),  btn(lb[1], "m:albums")],
-        [btn(lb[2], "m:top100"),  btn(lb[3], "m:library")],
-        [btn(lb[4], "m:profile"), btn(lb[5], "m:sub")],
-        [btn(lb[6], "m:ref"),     btn(lb[7], "m:settings")],
+        [btn(lb[2], "m:library"), btn(lb[3], "m:profile")],
+        [btn(lb[4], "m:sub"),    btn(lb[5], "m:ref")],
+        [btn(lb[6], "m:settings")],
     ]), back_label
 
 def back_btn(uid):
@@ -849,20 +850,15 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
-    # Альбоми — НОВИЙ SPOTIFY ФЛОУ
+    # Альбоми — Spotify
     if data == "m:albums":
         set_state(uid, "album_search")
         prompts = {
-            "uk": "💿 Введи назву альбому або Spotify посилання:\n\n<i>Приклади:</i>\n• <code>Баста Гуф 2010</code>\n• <code>https://open.spotify.com/album/...</code>\n• <code>2cc5b218e6f844a19492410846ad3079</code>",
+            "uk": "💿 Введи назву альбому або Spotify посилання:\n\n<i>Приклади:</i>\n• <code>Баста Гуф 2010</code>\n• <code>https://open.spotify.com/album/...</code>",
             "ru": "💿 Введи название альбома или ссылку Spotify:",
             "en": "💿 Enter album name or Spotify link:",
         }
         await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
-        return
-
-    # Топ 100
-    if data == "m:top100":
-        await show_top100(q.message, uid, ctx)
         return
 
     # Бібліотека
@@ -933,7 +929,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download(q.message, url, title, artist, uid, ctx)
         return
 
-    # === SPOTIFY ALBOM: вибір альбому з пошуку ===
+    # SPOTIFY: вибір альбому з пошуку
     if data.startswith("sp_album|"):
         album_id = data.split("|", 1)[1]
         if not has_access(uid):
@@ -941,7 +937,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_spotify_album(q.message, album_id, uid, ctx)
         return
 
-    # === SPOTIFY: завантажити трек з альбому ===
+    # SPOTIFY: завантажити трек з альбому
     if data.startswith("sp_track|"):
         if not has_access(uid):
             await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
@@ -956,7 +952,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         
         track = album_data["tracks"][track_idx]
         
-        # Шукаємо на YouTube
         status = await q.message.reply_text(f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML")
         yt_result = await async_find_youtube(track["name"], track["artists"])
         
@@ -968,7 +963,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download(q.message, yt_result["url"], track["name"], track["artists"], uid, ctx)
         return
 
-    # === SPOTIFY: завантажити весь альбом ZIP ===
+    # SPOTIFY: завантажити весь альбом ZIP
     if data == "sp_albumzip":
         if not has_access(uid):
             await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
@@ -983,29 +978,27 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download_spotify_album_zip(q.message, album_data, uid, ctx)
         return
 
-    # === SPOTIFY: додати альбом у бібліотеку ===
+    # SPOTIFY: додати альбом у бібліотеку
     if data.startswith("sp_addlib|"):
         parts = data.split("|", 2)
         album_ck = parts[1]
         album_data = ctx.application.bot_data.get("spotify_album_cache", {}).get(album_ck)
         if album_data:
-            # Беремо перший трек для URL
             first_track = album_data["tracks"][0] if album_data["tracks"] else {}
-            # Шукаємо YouTube для першого трека
             yt_result = await async_find_youtube(first_track.get("name", ""), album_data["artist"])
             url = yt_result["url"] if yt_result else album_data["external_url"]
             added = add_library(uid, album_data["name"], album_data["artist"], url, kind="album")
             await q.answer("✅ Альбом додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
         return
 
-    # Всі пісні артиста — ВВЕДЕННЯ ІМЕНІ
+    # Всі пісні артиста
     if data == "artist_input":
         set_state(uid, "artist_input")
         prompts = {"uk":"🎤 Введи ім'я артиста:","ru":"🎤 Введи имя артиста:","en":"🎤 Enter artist name:"}
         await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
-    # Скачати 20 пісень — ВВЕДЕННЯ ІМЕНІ
+    # Скачати 20 пісень
     if data == "dl20_input":
         set_state(uid, "dl20_input")
         prompts = {"uk":"⬇️ Введи ім'я артиста для завантаження 20 пісень:","ru":"⬇️ Введи имя артиста для скачивания 20 песен:","en":"⬇️ Enter artist name to download 20 songs:"}
@@ -1032,13 +1025,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("libdel|"):
         del_library(uid, int(data[7:]))
         await show_library(q.message, uid, ctx)
-        return
-
-    # Топ 100 сторінка
-    if data.startswith("t100p|"):
-        page = int(data[6:])
-        tracks = ctx.application.bot_data.get("top100", [])
-        await show_top100_page(q.message, uid, tracks, page, edit=True)
         return
 
     # Пагінація пошуку
@@ -1092,20 +1078,17 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Невірний або вичерпаний промокод.")
         return
 
-    # Пошук альбому — НОВИЙ SPOTIFY ФЛОУ
+    # Пошук альбому — Spotify
     if state == "album_search":
         set_state(uid, "")
         if not has_access(uid):
             await update.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
         
-        # Перевіряємо чи це Spotify ID/URL
         spotify_id = extract_spotify_album_id(text)
         
         if spotify_id:
-            # Це Spotify альбом
             await show_spotify_album(update.message, spotify_id, uid, ctx)
         else:
-            # Це текстовий пошук — шукаємо в Spotify
             await do_spotify_album_search(update, text, uid, ctx)
         return
 
@@ -1244,12 +1227,10 @@ async def show_spotify_album(msg, album_id, uid, ctx):
             await status.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
-    # Кешуємо альбом
     ck = f"sp_alb_{uid}_{album_id}"
     ctx.application.bot_data.setdefault("spotify_album_cache", {})[ck] = album
     ctx.application.bot_data["last_spotify_album_ck"] = ck
 
-    # Формуємо текст
     popularity_emoji = "🔥" if album["popularity"] != "—" and album["popularity"] > 70 else "⭐" if album["popularity"] != "—" and album["popularity"] > 40 else "📀"
     
     text = (
@@ -1266,7 +1247,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
     
     text += f"\n🎧 <b>Треки:</b>\n"
     
-    # Клавіатура треків
     kb = []
     for i, track in enumerate(album["tracks"]):
         text += f"{i+1}. {track['name']} — {track['duration']}\n"
@@ -1277,7 +1257,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
             )
         ])
 
-    # Кнопки дій
     l = get_lang(uid)
     zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
     add_label = {"uk":"📚 Додати в бібліотеку","ru":"📚 Добавить в библиотеку","en":"📚 Add to Library"}.get(l, "📚 Add to Library")
@@ -1288,7 +1267,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
     ])
     kb.append([back_btn(uid)])
 
-    # Відправляємо фото + текст
     try:
         await status.delete()
     except:
@@ -1319,7 +1297,6 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     
     quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     
-    # Шукаємо всі треки на YouTube
     tracks_with_yt = []
     total = len(album_data["tracks"])
     
@@ -1414,40 +1391,6 @@ async def batch_download(msg, artist, uid, ctx):
             except Exception as e:
                 logger.error(f"Batch: {e}")
     await status.edit_text(f"✅ Завантажено {ok} з {len(tracks)} пісень!")
-
-# ─── Топ 100 ──────────────────────────────────────────────────────────────────
-async def show_top100(msg, uid, ctx):
-    try:
-        status = await msg.edit_text("📊 Завантажую Топ 100…")
-    except:
-        status = await msg.reply_text("📊 Завантажую Топ 100…")
-    tracks = await async_top100()
-    ctx.application.bot_data["top100"] = tracks
-    await show_top100_page(status, uid, tracks, 0, edit=True)
-
-async def show_top100_page(msg, uid, tracks, page, edit=False):
-    per = 20
-    start = page * per
-    end = min(start + per, len(tracks))
-    chunk = tracks[start:end]
-
-    kb = []
-    for i, t in enumerate(chunk):
-        rank = t.get("rank", start + i + 1)
-        url_id = cache_url(msg.get_bot().bot_data if hasattr(msg, 'get_bot') else {}, t["url"], t["title"], "")
-        kb.append([InlineKeyboardButton(f"#{rank} {t['title'][:40]}", callback_data=f"dlurl|{url_id}|{t['title'][:30]}")])
-
-    nav = []
-    if page > 0: nav.append(InlineKeyboardButton("◀️", callback_data=f"t100p|{page-1}"))
-    if end < len(tracks): nav.append(InlineKeyboardButton("▶️", callback_data=f"t100p|{page+1}"))
-    if nav: kb.append(nav)
-    kb.append([back_btn(uid)])
-
-    text = f"📊 <b>Топ 100</b> — #{start+1}–#{end}:"
-    if edit:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    else:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Бібліотека ───────────────────────────────────────────────────────────────
 async def show_library(msg, uid, ctx):
