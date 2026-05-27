@@ -1308,7 +1308,7 @@ async def handle_admin_input(update, ctx, state, text):
         if len(parts) == 2:
             try:
                 target_id, days = int(parts[0]), int(parts[1])
-                                extend_sub(target_id, days)
+                extend_sub(target_id, days)
                 try:
                     await ctx.bot.send_message(
                         target_id,
