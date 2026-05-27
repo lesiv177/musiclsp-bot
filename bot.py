@@ -2,7 +2,7 @@
 #  MusicLSP — Частина 1: Імпорти, конфіг, Spotify, БД, пошук
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64
 import static_ffmpeg
 import requests
 
@@ -46,8 +46,8 @@ def get_spotify_token():
     """Отримує Spotify access token через Client Credentials flow."""
     global _spotify_token, _spotify_token_expires
     
-    now = datetime.datetime.utcnow().timestamp()
-    if _spotify_token and now < _spototify_token_expires - 60:
+    now = datetime.datetime.now(datetime.UTC).timestamp()
+    if _spotify_token and now < _spotify_token_expires - 60:
         return _spotify_token
     
     auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
@@ -83,7 +83,6 @@ def spotify_request(endpoint):
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 401:
-            # Token expired, retry once
             _spotify_token = None
             token = get_spotify_token()
             if token:
@@ -166,7 +165,7 @@ def url_hash(url):
 def cache_url(bot_data, url, title="", artist=""):
     bot_data.setdefault("url_cache", {})
     h = url_hash(url)
-    bot_data["url_cache"][h] = {"url": url, "title": title, "artist": artist, "ts": datetime.datetime.utcnow().isoformat()}
+    bot_data["url_cache"][h] = {"url": url, "title": title, "artist": artist, "ts": datetime.datetime.now(datetime.UTC).isoformat()}
     _clean_url_cache(bot_data)
     return h
 
@@ -175,7 +174,7 @@ def get_cached_url(bot_data, h):
 
 def _clean_url_cache(bot_data):
     cache = bot_data.get("url_cache", {})
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     to_delete = []
     for h, data in cache.items():
         try:
@@ -245,8 +244,8 @@ def get_user(uid):
         return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
 
 def create_user(uid, username, ref=None):
-    now = datetime.datetime.utcnow().isoformat()
-    exp = (datetime.datetime.utcnow() + datetime.timedelta(days=TRIAL_DAYS)).isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
+    exp = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=TRIAL_DAYS)).isoformat()
     with db() as c:
         c.execute("INSERT OR IGNORE INTO users (id,username,joined,trial_exp,referred_by) VALUES(?,?,?,?,?)",
                   (uid, username, now, exp, ref))
@@ -270,7 +269,7 @@ def set_state(uid, state):
 def has_access(uid):
     u = get_user(uid)
     if not u: return False
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     if u["sub_exp"] and datetime.datetime.fromisoformat(u["sub_exp"]) > now:
         return True
     if u["trial_exp"] and datetime.datetime.fromisoformat(u["trial_exp"]) > now:
@@ -279,7 +278,7 @@ def has_access(uid):
 
 def extend_sub(uid, days):
     u = get_user(uid)
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     base = now
     if u and u["sub_exp"]:
         base = max(datetime.datetime.fromisoformat(u["sub_exp"]), now)
@@ -289,7 +288,7 @@ def extend_sub(uid, days):
 
 def get_sub_status(uid):
     u = get_user(uid)
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     if u and u["sub_exp"]:
         e = datetime.datetime.fromisoformat(u["sub_exp"])
         if e > now: return "active", e.strftime("%d.%m.%Y")
@@ -303,7 +302,7 @@ def use_key(key, uid):
         r = c.execute("SELECT * FROM keys WHERE key=? AND used_by IS NULL", (key,)).fetchone()
         if not r: return None
         c.execute("UPDATE keys SET used_by=?, used_at=? WHERE key=?",
-                  (uid, datetime.datetime.utcnow().isoformat(), key))
+                  (uid, datetime.datetime.now(datetime.UTC).isoformat(), key))
         return r["days"]
 
 def add_key(key, days, plan):
@@ -317,7 +316,7 @@ def can_ref(uid):
         return (r["count"] if r else 0) < REF_LIMIT
 
 def add_referral(inviter, invitee):
-    now = datetime.datetime.utcnow().isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     today = datetime.date.today().isoformat()
     with db() as c:
         c.execute("INSERT INTO referrals(inviter,invitee,created) VALUES(?,?,?)", (inviter, invitee, now))
@@ -332,7 +331,7 @@ def get_ref_stats(uid):
         return {"count": cnt, "days": u["ref_days"] if u else 0}
 
 def add_library(uid, title, artist, url, kind="track"):
-    now = datetime.datetime.utcnow().isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     with db() as c:
         ex = c.execute("SELECT id FROM library WHERE user_id=? AND url=?", (uid, url)).fetchone()
         if not ex:
@@ -350,7 +349,7 @@ def del_library(uid, lid):
         c.execute("DELETE FROM library WHERE id=? AND user_id=?", (lid, uid))
 
 def add_history(uid, title, artist):
-    now = datetime.datetime.utcnow().isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     with db() as c:
         c.execute("INSERT INTO history(user_id,title,artist,played) VALUES(?,?,?,?)", (uid, title, artist, now))
 
@@ -363,7 +362,7 @@ def get_stats_user(uid):
 def create_promo(code, discount, uses):
     with db() as c:
         c.execute("INSERT OR REPLACE INTO promocodes(code,discount,uses_left,created) VALUES(?,?,?,?)",
-                  (code, discount, uses, datetime.datetime.utcnow().isoformat()))
+                  (code, discount, uses, datetime.datetime.now(datetime.UTC).isoformat()))
 
 def use_promo(code):
     with db() as c:
@@ -377,7 +376,7 @@ def get_all_users():
         return c.execute("SELECT * FROM users").fetchall()
 
 def get_global_stats():
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     with db() as c:
         total = c.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
         active = trial = 0
@@ -392,7 +391,7 @@ def get_global_stats():
 
 # ─── ПЛЕЙЛИСТИ ────────────────────────────────────────────────────────────────
 def create_playlist(uid, name, description=""):
-    now = datetime.datetime.utcnow().isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     with db() as c:
         c.execute("INSERT INTO playlists(user_id,name,description,created,updated) VALUES(?,?,?,?,?)",
                   (uid, name, description, now, now))
@@ -409,7 +408,7 @@ def get_playlist(pid):
         return pl, tracks
 
 def add_track_to_playlist(pid, title, artist, url, duration=""):
-    now = datetime.datetime.utcnow().isoformat()
+    now = datetime.datetime.now(datetime.UTC).isoformat()
     with db() as c:
         c.execute("INSERT INTO playlist_tracks(playlist_id,title,artist,url,duration,added) VALUES(?,?,?,?,?,?)",
                   (pid, title, artist, url, duration, now))
@@ -514,17 +513,15 @@ def search_all(query, limit=10):
 def artist_songs(artist, limit=50):
     return yt_search(f"{artist} official audio", limit)
 
-# ─── ПОШУК АЛЬБОМІВ ЧЕРЕЗ SPOTIFY ────────────────────────────────────────────
+# ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
 def extract_spotify_album_id(text):
     """Витягує album ID з Spotify URL або повертає сам ID."""
     text = text.strip()
-    # URL формати: https://open.spotify.com/album/XXXX?...
     if "spotify.com/album/" in text:
         parts = text.split("album/")
         if len(parts) > 1:
             id_part = parts[1].split("?")[0].split("/")[0]
             return id_part
-    # Просто ID (22 символи, букви+цифри)
     if len(text) == 22 and text.replace("-", "").replace("_", "").isalnum():
         return text
     return None
@@ -550,7 +547,7 @@ def get_spotify_album_info(album_id):
             "spotify_id": track.get("id", ""),
         })
     
-    # Додаткові сторінки треків (якщо альбом > 50 треків)
+    # Додаткові сторінки треків
     next_url = album.get("tracks", {}).get("next")
     while next_url:
         try:
@@ -574,10 +571,7 @@ def get_spotify_album_info(album_id):
         except:
             break
     
-    # Сортуємо за номером трека
     tracks.sort(key=lambda x: x["track_number"])
-    
-    # Популярність альбому (total_tracks як fallback)
     popularity = album.get("popularity", "—")
     
     return {
