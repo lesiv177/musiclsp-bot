@@ -911,7 +911,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 # ============================================================
 #  MusicLSP — Частина 3: Повідомлення, завантаження, адмін, main
-#  ОНОВЛЕНО: Альбоми з MusicBrainz, ZIP, плейлисти
+#  ОНОВЛЕНО: повернено старий пошук альбомів
 # ============================================================
 
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
@@ -947,12 +947,12 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Невірний або вичерпаний промокод.")
         return
 
-    # Пошук альбому через MusicBrainz
+    # Пошук альбому
     if state == "album_search":
         set_state(uid, "")
         if not has_access(uid):
             await update.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
-        await do_album_search_mb(update, text, uid, ctx)
+        await do_album_search(update, text, uid, ctx)
         return
 
     # ВВЕДЕННЯ АРТИСТА — всі пісні
@@ -1038,140 +1038,33 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     else:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── Пошук альбому через MusicBrainz ──────────────────────────────────────────
-async def do_album_search_mb(update, query, uid, ctx):
-    l = get_lang(uid)
-    msg = await update.message.reply_text(f"💿 Шукаю альбом: <b>{query}</b>…", parse_mode="HTML")
-    
-    album_data = await async_album_info(query)
-    
-    if not album_data or not album_data.get("tracks"):
-        await msg.edit_text(
-            "😔 Альбом не знайдено в базі.\n\nСпробую знайти через YouTube…",
-            parse_mode="HTML"
-        )
-        await do_album_search_fallback(update, query, uid, ctx, msg)
-        return
-    
-    album_ck = f"album_{uid}_{msg.message_id}"
-    ctx.application.bot_data.setdefault("album_cache", {})[album_ck] = album_data
-    ctx.application.bot_data["last_album_ck"] = album_ck
-    
-    tags_str = ", ".join(album_data.get("tags", [])) if album_data.get("tags") else ""
-    wiki_text = album_data.get("wiki", "")[:200] + "..." if len(album_data.get("wiki", "")) > 200 else album_data.get("wiki", "")
-    
-    text = (
-        f"💿 <b>{album_data['title']}</b>\n"
-        f"🎤 {album_data['artist']}\n"
-        f"📅 {album_data['year'] or 'Невідомо'}\n"
-    )
-    if album_data.get("label"):
-        text += f"🏷️ {album_data['label']}\n"
-    if tags_str:
-        text += f"📝 {tags_str}\n"
-    text += (
-        f"🔢 {album_data['track_count']} треків\n"
-        f"⏱️ {album_data['total_duration']}\n"
-    )
-    if album_data.get("listeners"):
-        text += f"👥 {int(album_data['listeners']):,} слухачів\n"
-    if wiki_text:
-        text += f"\n📖 <i>{wiki_text}</i>\n"
-    text += f"\n🎵 <b>Треклист:</b>"
-    
-    kb = []
-    show_tracks = album_data["tracks"][:15]
-    for i, track in enumerate(show_tracks):
-        btn_text = f"{track['position'] or i+1}. {track['title'][:35]} ({track['duration']})"
-        kb.append([InlineKeyboardButton(btn_text, callback_data=f"albumtrack|{album_ck}|{i}")])
-    
-    if len(album_data["tracks"]) > 15:
-        kb.append([InlineKeyboardButton(f"➕ Ще {len(album_data['tracks']) - 15} треків", callback_data=f"albummore|{album_ck}|15")])
-    
-    action_row = []
-    action_row.append(InlineKeyboardButton("📚 До бібліотеки", callback_data=f"addpl|{album_ck}"))
-    
-    if has_access(uid):
-        action_row.append(InlineKeyboardButton("⬇️ ZIP всі", callback_data="albumzip"))
-    
-    kb.append(action_row)
-    kb.append([back_btn(uid)])
-    
-    image_url = album_data.get("image", "")
-    if image_url:
-        try:
-            await msg.delete()
-            await update.message.reply_photo(
-                photo=image_url,
-                caption=text,
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="HTML"
-            )
-            return
-        except Exception as e:
-            logger.warning(f"Failed to send album cover: {e}")
-    
-    await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+# ─── Пошук альбому (СТАРИЙ РОБОЧИЙ ВАРІАНТ) ─────────────────────────────────
+async def do_album_search(update, album_name, uid, ctx):
+    msg = await update.message.reply_text(f"💿 Шукаю альбом: <b>{album_name}</b>…", parse_mode="HTML")
+    tracks = await async_album(album_name, 20)
 
-async def do_album_search_fallback(update, query, uid, ctx, msg):
-    tracks = await async_search(f"{query} album", limit=20)
     if not tracks:
-        await msg.edit_text("😔 Альбом не знайдено.")
-        return
-    
+        await msg.edit_text("😔 Альбом не знайдено.\n\nСпробуй написати точніше: «Артист Назва Альбому»\nНаприклад: «Баста Гуф 2010»"); return
+
     ck = f"alb_{uid}_{msg.message_id}"
     ctx.application.bot_data.setdefault("cache", {})[ck] = tracks
-    
+
     kb = []
-    for i, t in enumerate(tracks[:10]):
+    for i, t in enumerate(tracks):
         kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
+
+    first_url = tracks[0]["url"] if tracks else ""
+    url_id = cache_url(ctx.application.bot_data, first_url, album_name, "Album")
     
-    url_id = cache_url(ctx.application.bot_data, tracks[0]["url"], query, "Album") if tracks else ""
     add_labels = {"uk":"📚 Додати альбом в бібліотеку","ru":"📚 Добавить альбом в библиотеку","en":"📚 Add album to library"}
     l = get_lang(uid)
-    kb.append([InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addalbum|{query}|{url_id}")])
+    kb.append([InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addalbum|{album_name}|{url_id}")])
     kb.append([back_btn(uid)])
-    
+
     await msg.edit_text(
-        f"💿 <b>{query}</b> — знайдено {len(tracks)} треків\n\nОбери пісню 👇",
+        f"💿 <b>{album_name}</b> — {len(tracks)} треків\n\nОбери пісню 👇",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
     )
-
-# ─── Завантаження ZIP альбому ────────────────────────────────────────────────
-async def do_download_album_zip(msg, album_data, uid, ctx):
-    l = get_lang(uid)
-    status = await msg.reply_text("⬇️ Створюю ZIP-архів…\n<i>Це може зайняти кілька хвилин</i>", parse_mode="HTML")
-    
-    quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
-    
-    try:
-        zip_buffer = await create_album_zip(album_data["tracks"], quality)
-        
-        if not zip_buffer:
-            await status.edit_text("❌ Не вдалось завантажити жодного треку.")
-            return
-        
-        size_mb = len(zip_buffer.getvalue()) / 1024 / 1024
-        if size_mb > 50:
-            await status.edit_text(f"❌ Архів {size_mb:.1f}МБ — завеликий для Telegram.")
-            return
-        
-        await status.edit_text("📤 Відправляю архів…")
-        
-        safe_name = f"{album_data['artist'][:30]} - {album_data['title'][:30]}.zip"
-        safe_name = "".join(c for c in safe_name if c.isalnum() or c in " -_.")
-        
-        await msg.reply_document(
-            document=zip_buffer,
-            filename=safe_name,
-            caption=f"💿 <b>{album_data['title']}</b>\n🎤 {album_data['artist']}\n📦 {len(album_data['tracks'])} треків",
-            parse_mode="HTML"
-        )
-        await status.delete()
-        
-    except Exception as e:
-        logger.error(f"ZIP download error: {e}")
-        await status.edit_text("❌ Помилка створення архіву. Спробуй завантажити треки окремо.")
 
 # ─── Всі пісні артиста ────────────────────────────────────────────────────────
 async def show_artist(msg, artist, uid, ctx):
@@ -1374,27 +1267,14 @@ async def do_download(msg, url, title, artist, uid, ctx):
         try:
             path = await async_download(url, tmp, quality)
             if not path or not os.path.exists(path):
-                has_cookies = os.path.exists("youtube_cookies.txt")
-                if not has_cookies:
-                    await status.edit_text(
-                        "❌ YouTube заблокував завантаження.\n\n"
-                        "💡 <b>Потрібен cookies файл!</b>\n\n"
-                        "1. Встанови розширення «Get cookies.txt LOCALLY» в Chrome\n"
-                        "2. Зайди на youtube.com (будь авторизованим)\n"
-                        "3. Експортуй cookies → збережи як <code>youtube_cookies.txt</code>\n"
-                        "4. Завантаж файл у корінь проєкту на Railway\n\n"
-                        "Або онови yt-dlp: <code>pip install -U yt-dlp</code>",
-                        parse_mode="HTML"
-                    )
-                else:
-                    await status.edit_text(
-                        "❌ Не вдалось завантажити навіть з cookies.\n\n"
-                        "💡 Спробуй:\n"
-                        "1. Оновити cookies файл (він міг застаріти)\n"
-                        "2. Оновити yt-dlp: <code>pip install -U yt-dlp</code>\n"
-                        "3. Спробувати іншу пісню",
-                        parse_mode="HTML"
-                    )
+                await status.edit_text(
+                    "❌ YouTube заблокував завантаження.\n\n"
+                    "💡 Спробуй:\n"
+                    "1. Оновити yt-dlp: <code>pip install -U yt-dlp</code>\n"
+                    "2. Спробувати іншу пісню\n"
+                    "3. Перевірити через годину",
+                    parse_mode="HTML"
+                )
                 return
 
             size = os.path.getsize(path) / 1024 / 1024
@@ -1437,8 +1317,8 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 await status.edit_text("❌ Відео недоступне в твоїй країні. Спробуй іншу пісню.")
             elif "sign in" in error_msg or "login" in error_msg or "bot" in error_msg:
                 await status.edit_text(
-                    "❌ YouTube вимагає авторизацію (cookies).\n\n"
-                    "💡 Створи <code>youtube_cookies.txt</code> через розширення «Get cookies.txt LOCALLY»",
+                    "❌ YouTube вимагає авторизацію.\n\n"
+                    "💡 Спробуй іншу пісню або онови yt-dlp.",
                     parse_mode="HTML"
                 )
             else:
