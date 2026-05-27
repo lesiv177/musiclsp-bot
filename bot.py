@@ -1,9 +1,9 @@
 # ============================================================
 #  MusicLSP — Частина 1: Імпорти, конфіг, БД, пошук
-#  Оновлено: MusicBrainz + Last.fm для альбомів
+#  Оновлено: повернено старий пошук альбомів через YouTube
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, json, urllib.parse, urllib.request
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib
 import static_ffmpeg
 
 static_ffmpeg.add_paths()
@@ -32,9 +32,6 @@ PLANS = {
     "week":  {"days": 7,  "price": 0.5,  "label": "7 днів — $0.50"},
     "month": {"days": 30, "price": 2.0,  "label": "30 днів — $2.00"},
 }
-
-# ─── API Keys ─────────────────────────────────────────────────────────────────
-LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "")  # Безкоштовно на last.fm/api
 
 # ─── Мови ─────────────────────────────────────────────────────────────────────
 LANGUAGES = {
@@ -340,106 +337,6 @@ def delete_playlist_track(pid, tid):
     with db() as c:
         c.execute("DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", (tid, pid))
 
-# ─── MusicBrainz API ──────────────────────────────────────────────────────────
-def mb_search_album(query, limit=5):
-    """Пошук альбому в MusicBrainz"""
-    try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://musicbrainz.org/ws/2/release/?query=release:{encoded}&fmt=json&limit={limit}"
-        req = urllib.request.Request(url, headers={"User-Agent": "MusicLSPBot/1.0 (contact@example.com)"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        
-        results = []
-        for item in data.get("releases", [])[:limit]:
-            artists = ", ".join([a.get("name", "") for a in item.get("artist-credit", [])])
-            results.append({
-                "id": item.get("id"),
-                "title": item.get("title", "Unknown"),
-                "artist": artists,
-                "date": item.get("date", "")[:4] if item.get("date") else "",
-                "track_count": item.get("track-count", 0),
-                "country": item.get("country", ""),
-            })
-        return results
-    except Exception as e:
-        logger.error(f"MusicBrainz search error: {e}")
-        return []
-
-def mb_get_album_tracks(release_id):
-    """Отримати треклист альбому з MusicBrainz"""
-    try:
-        url = f"https://musicbrainz.org/ws/2/release/{release_id}?inc=recordings+artists&fmt=json"
-        req = urllib.request.Request(url, headers={"User-Agent": "MusicLSPBot/1.0 (contact@example.com)"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        
-        tracks = []
-        for medium in data.get("media", []):
-            for track in medium.get("tracks", []):
-                recording = track.get("recording", {})
-                dur = track.get("length", 0)
-                dur_sec = dur // 1000 if dur else 0
-                m, s = divmod(dur_sec, 60)
-                tracks.append({
-                    "title": track.get("title", "Unknown"),
-                    "duration": f"{m}:{s:02d}",
-                    "duration_sec": dur_sec,
-                    "position": track.get("position", 0),
-                })
-        
-        # Artist info
-        artists = []
-        for a in data.get("artist-credit", []):
-            if isinstance(a, dict):
-                artists.append(a.get("name", ""))
-        
-        return {
-            "title": data.get("title", ""),
-            "artist": ", ".join(filter(None, artists)),
-            "date": data.get("date", "")[:4] if data.get("date") else "",
-            "country": data.get("country", ""),
-            "label": data.get("label-info", [{}])[0].get("label", {}).get("name", "") if data.get("label-info") else "",
-            "tracks": tracks,
-            "track_count": len(tracks),
-        }
-    except Exception as e:
-        logger.error(f"MusicBrainz tracks error: {e}")
-        return None
-
-# ─── Last.fm API ──────────────────────────────────────────────────────────────
-def lastfm_get_album_info(artist, album):
-    """Отримати інфу та обкладинку альбому з Last.fm"""
-    if not LASTFM_API_KEY:
-        return None
-    try:
-        encoded_artist = urllib.parse.quote(artist)
-        encoded_album = urllib.parse.quote(album)
-        url = f"https://ws.audioscrobbler.com/2.0/?method=album.getinfo&api_key={LASTFM_API_KEY}&artist={encoded_artist}&album={encoded_album}&format=json"
-        req = urllib.request.Request(url, headers={"User-Agent": "MusicLSPBot/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-        
-        album_data = data.get("album", {})
-        image = ""
-        for img in album_data.get("image", []):
-            if img.get("size") == "extralarge":
-                image = img.get("#text", "")
-                break
-            elif img.get("size") == "large" and not image:
-                image = img.get("#text", "")
-        
-        return {
-            "image": image,
-            "listeners": album_data.get("listeners", "0"),
-            "playcount": album_data.get("playcount", "0"),
-            "tags": [t.get("name", "") for t in album_data.get("tags", {}).get("tag", [])[:3]],
-            "wiki": album_data.get("wiki", {}).get("summary", "")[:300] if album_data.get("wiki") else "",
-        }
-    except Exception as e:
-        logger.error(f"Last.fm error: {e}")
-        return None
-
 # ─── Музика: YouTube/SoundCloud пошук ─────────────────────────────────────────
 
 def fmt_dur(s):
@@ -460,12 +357,13 @@ def get_yt_opts(extra=None, use_cookies=True):
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         },
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web"],
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        },
     }
-    if use_cookies:
-        cookies_file = "youtube_cookies.txt"
-        if os.path.exists(cookies_file):
-            opts["cookiefile"] = cookies_file
-            logger.info("Using cookies file for yt-dlp")
     if extra:
         opts.update(extra)
     return opts
@@ -530,63 +428,55 @@ def search_all(query, limit=10):
 def artist_songs(artist, limit=50):
     return yt_search(f"{artist} official audio", limit)
 
-# ─── ПОШУК АЛЬБОМІВ (ОНОВЛЕНО — MusicBrainz) ─────────────────────────────────
-def search_album_info(query):
+# ─── ПОШУК АЛЬБОМІВ (СТАРИЙ РОБОЧИЙ ВАРІАНТ) ───────────────────────────────
+def search_album_tracks(album_name, limit=20):
     """
-    Шукає альбом через MusicBrainz + Last.fm
-    Повертає повну інформацію про альбом
+    Пошук альбому через YouTube плейлисти.
+    Якщо не знайшло плейлист — шукає окремі треки.
     """
-    # Крок 1: Шукаємо в MusicBrainz
-    results = mb_search_album(query, limit=5)
-    if not results:
-        return None
+    try:
+        opts = get_yt_opts({"playlistend": limit})
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            # Шукаємо плейлисти з альбомом
+            search_query = f"ytsearch5:{album_name} album playlist"
+            r = ydl.extract_info(search_query, download=False)
+            
+            for entry in (r.get("entries") or []):
+                if not entry: continue
+                title_lower = entry.get("title", "").lower()
+                if "playlist" in title_lower or "album" in title_lower:
+                    playlist_url = entry.get("url") or f"https://www.youtube.com/playlist?list={entry.get('id', '')}"
+                    if "playlist?list=" in playlist_url:
+                        try:
+                            pr = ydl.extract_info(playlist_url, download=False)
+                            tracks = []
+                            for i, e in enumerate(pr.get("entries") or []):
+                                if not e: continue
+                                tracks.append({
+                                    "title": e.get("title", "Unknown"),
+                                    "url": f"https://www.youtube.com/watch?v={e['id']}",
+                                    "id": e["id"],
+                                    "duration": fmt_dur(e.get("duration", 0)),
+                                    "channel": e.get("channel") or e.get("uploader") or "—",
+                                    "source": "youtube",
+                                })
+                            if len(tracks) >= 3:
+                                return tracks[:limit]
+                        except:
+                            continue
+    except Exception as ex:
+        logger.warning(f"Album playlist search failed: {ex}")
     
-    # Беремо перший результат
-    best = results[0]
-    release_id = best["id"]
+    # Fallback: шукаємо окремі треки
+    tracks = yt_search(f"{album_name} album", limit + 10)
+    filtered = []
+    for t in tracks:
+        title_lower = t["title"].lower()
+        if any(bad in title_lower for bad in ["reaction", "review", "cover", "live", "concert"]):
+            continue
+        filtered.append(t)
     
-    # Крок 2: Отримуємо треклист
-    album_data = mb_get_album_tracks(release_id)
-    if not album_data:
-        return None
-    
-    # Крок 3: Отримуємо обкладинку з Last.fm
-    lastfm_data = lastfm_get_album_info(album_data["artist"], album_data["title"])
-    
-    # Крок 4: Шукаємо YouTube URL для кожного треку
-    for track in album_data["tracks"]:
-        yt_results = yt_search(f"{album_data['artist']} {track['title']} audio", limit=1)
-        if yt_results:
-            track["yt_url"] = yt_results[0]["url"]
-            track["yt_id"] = yt_results[0]["id"]
-        else:
-            track["yt_url"] = ""
-            track["yt_id"] = ""
-    
-    # Загальна тривалість
-    total_sec = sum(t.get("duration_sec", 0) for t in album_data["tracks"])
-    total_m, total_s = divmod(total_sec, 60)
-    total_h, total_m = divmod(total_m, 60)
-    if total_h > 0:
-        total_dur = f"{total_h}:{total_m:02d}:{total_s:02d}"
-    else:
-        total_dur = f"{total_m}:{total_s:02d}"
-    
-    return {
-        "title": album_data["title"],
-        "artist": album_data["artist"],
-        "year": album_data["date"],
-        "country": album_data["country"],
-        "label": album_data["label"],
-        "track_count": album_data["track_count"],
-        "total_duration": total_dur,
-        "tracks": album_data["tracks"],
-        "image": lastfm_data.get("image", "") if lastfm_data else "",
-        "listeners": lastfm_data.get("listeners", "") if lastfm_data else "",
-        "playcount": lastfm_data.get("playcount", "") if lastfm_data else "",
-        "tags": lastfm_data.get("tags", []) if lastfm_data else [],
-        "wiki": lastfm_data.get("wiki", "") if lastfm_data else "",
-    }
+    return filtered[:limit]
 
 def get_top100():
     try:
