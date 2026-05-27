@@ -637,12 +637,6 @@ def download_mp3(url, out_dir, quality="192"):
         },
     }
     
-    cookies_file = "youtube_cookies.txt"
-    has_cookies_file = os.path.exists(cookies_file)
-    if has_cookies_file:
-        base_opts["cookiefile"] = cookies_file
-        logger.info("Using cookies file for YouTube download")
-    
     clients = [
         {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
         {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]},
