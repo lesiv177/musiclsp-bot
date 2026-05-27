@@ -1,19 +1,16 @@
 # ============================================================
-#  MusicLSP — Головний бот (ВИПРАВЛЕНО v4)
-#  Автор: Lesiv
-#  Фікси: YouTube блокування + бібліотека + пагінація + стабільність
+#  MusicLSP — Частина 1: Імпорти, конфіг, БД, пошук
+#  Оновлено: yt-dlp обхід блокувань + cookies
 # ============================================================
 
 import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib
 import static_ffmpeg
 
-# Встановлюємо ffmpeg автоматично
 static_ffmpeg.add_paths()
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import yt_dlp
-
 
 # ─── Логування ────────────────────────────────────────────────────────────────
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
@@ -296,14 +293,14 @@ def get_global_stats():
         keys_total = c.execute("SELECT COUNT(*) as c FROM keys").fetchone()["c"]
     return {"total": total, "active": active, "trial": trial, "ku": keys_used, "kt": keys_total}
 
-# ─── Музика (ОНОВЛЕНО з обходом блокування YouTube) ─────────────────────────
+# ─── Музика: ОНОВЛЕНО з обходом блокування YouTube ─────────────────────────
 
 def fmt_dur(s):
     if not s: return "—"
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
-def get_yt_opts(extra=None):
+def get_yt_opts(extra=None, use_cookies=True):
     """Повертає базові опції yt-dlp з обходом блокувань"""
     opts = {
         "quiet": True,
@@ -316,26 +313,31 @@ def get_yt_opts(extra=None):
             "Accept-Language": "en-US,en;q=0.9",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         },
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["web"],
-                "player_skip": ["webpage", "configs", "js"],
-            }
-        },
     }
+    # Додаємо cookies файл якщо є
+    if use_cookies:
+        cookies_file = "youtube_cookies.txt"
+        if os.path.exists(cookies_file):
+            opts["cookiefile"] = cookies_file
+            logger.info("Using cookies file for yt-dlp")
     if extra:
         opts.update(extra)
     return opts
 
 def yt_search(query, limit=10):
+    """Пошук YouTube з fallback'ами"""
+    # Спроба 1: web client з cookies
     opts = get_yt_opts()
+    opts["extractor_args"] = {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
     except Exception as e:
-        logger.warning(f"yt_search primary failed: {e}, trying fallback...")
-        opts["extractor_args"] = {"youtube": {"player_client": ["android"]}}
+        logger.warning(f"yt_search web failed: {e}")
+        # Спроба 2: android client
         try:
+            opts = get_yt_opts()
+            opts["extractor_args"] = {"youtube": {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]}}
             with yt_dlp.YoutubeDL(opts) as ydl:
                 r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
         except Exception as e2:
@@ -450,11 +452,15 @@ def get_top100():
     except Exception as ex:
         logger.error(f"Top100: {ex}")
         return yt_search("top hits 2024", 50)
+# ============================================================
+#  MusicLSP — Частина 2: Завантаження MP3 (ОНОВЛЕНО)
+#  Ключові зміни: cookies файл + browser_cookie3 fallback
+# ============================================================
 
 def download_mp3(url, out_dir, quality="192"):
     """
     Завантажує MP3 з обходом блокувань YouTube.
-    Якщо не вдається — пробує fallback опції.
+    Пробує: web → android → ios → tv_embedded → web_embedded → browser cookies
     """
     base_opts = {
         "format": "bestaudio/best",
@@ -471,69 +477,59 @@ def download_mp3(url, out_dir, quality="192"):
         },
     }
     
-    # Спроба 1: web client
-    try:
-        opts = dict(base_opts)
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["web"],
-                "player_skip": ["webpage", "configs", "js"],
-            }
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-        for f in Path(out_dir).glob("*.mp3"):
-            return str(f)
-    except Exception as e:
-        logger.warning(f"Download attempt 1 failed: {e}")
+    # === КРИТИЧНО: перевіряємо cookies файл ===
+    cookies_file = "youtube_cookies.txt"
+    has_cookies_file = os.path.exists(cookies_file)
+    if has_cookies_file:
+        base_opts["cookiefile"] = cookies_file
+        logger.info("Using cookies file for YouTube download")
     
-    # Спроба 2: android client
-    try:
-        opts = dict(base_opts)
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["android"],
-                "player_skip": ["webpage", "configs", "js"],
-            }
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-        for f in Path(out_dir).glob("*.mp3"):
-            return str(f)
-    except Exception as e:
-        logger.warning(f"Download attempt 2 failed: {e}")
+    # Список client'ів для спроб
+    clients = [
+        {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
+        {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]},
+        {"player_client": ["ios"], "player_skip": ["webpage", "configs", "js"]},
+        {"player_client": ["tv_embedded"], "player_skip": ["webpage", "configs", "js"]},
+        {"player_client": ["web_embedded"], "player_skip": ["webpage", "configs", "js"]},
+    ]
     
-    # Спроба 3: ios client
-    try:
-        opts = dict(base_opts)
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["ios"],
-                "player_skip": ["webpage", "configs", "js"],
-            }
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-        for f in Path(out_dir).glob("*.mp3"):
-            return str(f)
-    except Exception as e:
-        logger.warning(f"Download attempt 3 failed: {e}")
+    # Спроба 1-5: різні clients (з cookies файлом, якщо є)
+    for i, client in enumerate(clients):
+        try:
+            opts = dict(base_opts)
+            opts["extractor_args"] = {"youtube": client}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    for f in Path(out_dir).glob("*.mp3"):
+                        return str(f)
+        except Exception as e:
+            err_str = str(e).lower()
+            # Якщо помилка "Sign in to confirm you're not a bot" — cookies точно потрібні
+            if "sign in" in err_str or "bot" in err_str:
+                logger.warning(f"Attempt {i+1}: YouTube вимагає авторизації (потрібен cookies файл)")
+            else:
+                logger.warning(f"Download attempt {i+1} ({client['player_client'][0]}) failed: {e}")
+            continue
     
-    # Спроба 4: tv_embedded
-    try:
-        opts = dict(base_opts)
-        opts["extractor_args"] = {
-            "youtube": {
-                "player_client": ["tv_embedded"],
-                "player_skip": ["webpage", "configs", "js"],
-            }
-        }
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.extract_info(url, download=True)
-        for f in Path(out_dir).glob("*.mp3"):
-            return str(f)
-    except Exception as e:
-        logger.warning(f"Download attempt 4 failed: {e}")
+    # === Спроба 6: browser cookies (якщо cookies файл не допоміг або відсутній) ===
+    if not has_cookies_file:
+        try:
+            import browser_cookie3
+            opts = dict(base_opts)
+            # Видаляємо cookiefile, використовуємо browser cookies
+            opts.pop("cookiefile", None)
+            opts["cookiesfrombrowser"] = ("chrome",)
+            opts["extractor_args"] = {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}}
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    for f in Path(out_dir).glob("*.mp3"):
+                        return str(f)
+        except ImportError:
+            logger.warning("browser_cookie3 not installed, skipping browser cookies")
+        except Exception as e:
+            logger.warning(f"Browser cookies attempt failed: {e}")
     
     logger.error(f"All download attempts failed for {url}")
     return None
@@ -552,6 +548,7 @@ async def async_top100():
 
 async def async_download(url, out_dir, quality="192"):
     return await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
+
 # ─── Клавіатури ───────────────────────────────────────────────────────────────
 def main_kb(uid):
     l = get_lang(uid)
@@ -806,6 +803,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.application.bot_data.setdefault("quality", {})[uid] = q_val
         await q.answer(f"✅ Якість: {q_val} kbps", show_alert=True)
         return
+# ============================================================
+#  MusicLSP — Частина 3: Повідомлення, завантаження, адмін, main
+#  Оновлено: do_download з кращою обробкою помилок yt-dlp
+# ============================================================
 
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1162,7 +1163,28 @@ async def do_download(msg, url, title, artist, uid, ctx):
         try:
             path = await async_download(url, tmp, quality)
             if not path or not os.path.exists(path):
-                await status.edit_text("❌ Не вдалось завантажити. Спробуй іншу пісню.\n\n💡 <i>Порада: онови yt-dlp через pip install -U yt-dlp</i>")
+                # Перевіряємо чи є cookies файл
+                has_cookies = os.path.exists("youtube_cookies.txt")
+                if not has_cookies:
+                    await status.edit_text(
+                        "❌ YouTube заблокував завантаження.\n\n"
+                        "💡 <b>Потрібен cookies файл!</b>\n\n"
+                        "1. Встанови розширення «Get cookies.txt LOCALLY» в Chrome\n"
+                        "2. Зайди на youtube.com (будь авторизованим)\n"
+                        "3. Експортуй cookies → збережи як <code>youtube_cookies.txt</code>\n"
+                        "4. Завантаж файл у корінь проєкту на Railway\n\n"
+                        "Або онови yt-dlp: <code>pip install -U yt-dlp</code>",
+                        parse_mode="HTML"
+                    )
+                else:
+                    await status.edit_text(
+                        "❌ Не вдалось завантажити навіть з cookies.\n\n"
+                        "💡 Спробуй:\n"
+                        "1. Оновити cookies файл (він міг застаріти)\n"
+                        "2. Оновити yt-dlp: <code>pip install -U yt-dlp</code>\n"
+                        "3. Спробувати іншу пісню",
+                        parse_mode="HTML"
+                    )
                 return
 
             size = os.path.getsize(path) / 1024 / 1024
@@ -1203,11 +1225,15 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 await status.edit_text("❌ Відео видалено. Спробуй іншу пісню.")
             elif "unavailable" in error_msg:
                 await status.edit_text("❌ Відео недоступне в твоїй країні. Спробуй іншу пісню.")
-            elif "sign in" in error_msg or "login" in error_msg:
-                await status.edit_text("❌ YouTube вимагає авторизації.\n\n💡 Спробуй іншу пісню або онови yt-dlp.")
+            elif "sign in" in error_msg or "login" in error_msg or "bot" in error_msg:
+                await status.edit_text(
+                    "❌ YouTube вимагає авторизацію (cookies).\n\n"
+                    "💡 Створи <code>youtube_cookies.txt</code> через розширення «Get cookies.txt LOCALLY»",
+                    parse_mode="HTML"
+                )
             else:
                 logger.error(f"DownloadError: {e}")
-                await status.edit_text("❌ YouTube заблокував завантаження.\n\n💡 Спробуй:\n1. Оновити yt-dlp: <code>pip install -U yt-dlp</code>\n2. Спробувати іншу пісню\n3. Перевірити через годину", parse_mode="HTML")
+                await status.edit_text("❌ Помилка завантаження. Спробуй іншу пісню.")
         except Exception as e:
             logger.error(f"Download unexpected error: {e}")
             await status.edit_text("❌ Помилка завантаження. Спробуй іншу пісню.")
