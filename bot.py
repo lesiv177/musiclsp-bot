@@ -1,9 +1,10 @@
 # ============================================================
-#  MusicLSP — Головний бот
+#  MusicLSP — Головний бот (ВИПРАВЛЕНО)
 #  Автор: Lesiv
+#  Фікси: Button_data_invalid + пошук альбомів через YT Music API
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib
 import static_ffmpeg
 
 # Встановлюємо ffmpeg автоматично
@@ -12,6 +13,15 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 import yt_dlp
+
+# Для точного пошуку альбомів
+try:
+    from ytmusicapi import YTMusic
+    YTMUSIC_AVAILABLE = True
+except ImportError:
+    YTMUSIC_AVAILABLE = False
+    logging.warning("ytmusicapi не встановлено. Пошук альбомів буде працювати через звичайний YouTube пошук.")
+    YTMusic = None
 
 
 # ─── Логування ────────────────────────────────────────────────────────────────
@@ -73,6 +83,39 @@ def tx(key, lang, **kw):
     s = TEXTS.get(key, {})
     t = s.get(lang) or s.get("en") or f"[{key}]"
     return t.format(**kw) if kw else t
+
+# ─── Хелпери для callback_data (фікс Button_data_invalid) ────────────────────
+def url_hash(url):
+    """Повертає короткий хеш URL (8 символів) для використання в callback_data"""
+    return hashlib.md5(url.encode('utf-8')).hexdigest()[:8]
+
+def cache_url(bot_data, url, title="", artist=""):
+    """Зберігає URL в кеші і повертає його хеш"""
+    bot_data.setdefault("url_cache", {})
+    h = url_hash(url)
+    bot_data["url_cache"][h] = {"url": url, "title": title, "artist": artist, "ts": datetime.datetime.utcnow().isoformat()}
+    # Чистимо старі записи (старші за 1 годину)
+    _clean_url_cache(bot_data)
+    return h
+
+def get_cached_url(bot_data, h):
+    """Отримує URL з кешу по хешу"""
+    return bot_data.get("url_cache", {}).get(h, {})
+
+def _clean_url_cache(bot_data):
+    """Чистить старі записи з кешу URL"""
+    cache = bot_data.get("url_cache", {})
+    now = datetime.datetime.utcnow()
+    to_delete = []
+    for h, data in cache.items():
+        try:
+            ts = datetime.datetime.fromisoformat(data.get("ts", "2000-01-01"))
+            if (now - ts).total_seconds() > 3600:
+                to_delete.append(h)
+        except:
+            to_delete.append(h)
+    for h in to_delete:
+        cache.pop(h, None)
 
 # ─── База даних ───────────────────────────────────────────────────────────────
 def db():
@@ -318,8 +361,65 @@ def search_all(query, limit=10):
 def artist_songs(artist, limit=50):
     return yt_search(f"{artist} official audio", limit)
 
+# ─── НОВИЙ ПОШУК АЛЬБОМІВ через YouTube Music API ────────────────────────────
+def search_album_ytmusic(album_name, limit=20):
+    """
+    Шукає альбом через YouTube Music API і повертає СУТО треки з цього альбому.
+    Якщо ytmusicapi не встановлено — повертає порожній список.
+    """
+    if not YTMUSIC_AVAILABLE or YTMusic is None:
+        return []
+    
+    try:
+        yt = YTMusic()
+        # Шукаємо альбоми
+        results = yt.search(album_name, filter="albums", limit=5)
+        if not results:
+            return []
+        
+        # Беремо перший знайдений альбом
+        album = results[0]
+        album_id = album.get("browseId")
+        if not album_id:
+            return []
+        
+        # Отримуємо деталі альбому з треками
+        album_details = yt.get_album(album_id)
+        tracks = []
+        
+        for track in album_details.get("tracks", [])[:limit]:
+            video_id = track.get("videoId")
+            if not video_id:
+                continue
+            
+            dur = track.get("duration_seconds") or track.get("lengthSeconds", 0)
+            tracks.append({
+                "title": track.get("title", "Unknown"),
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "id": video_id,
+                "duration": fmt_dur(dur),
+                "channel": track.get("artists", [{}])[0].get("name", "—") if track.get("artists") else "—",
+                "source": "youtube",
+                "album": album_details.get("title", album_name),
+            })
+        
+        return tracks
+    except Exception as ex:
+        logger.error(f"YTMusic album search error: {ex}")
+        return []
+
 def search_album(album_name, limit=20):
-    """Шукає пісні альбому."""
+    """
+    Шукає пісні альбому. Спочатку пробує YT Music API, якщо не вдається — fallback на звичайний пошук.
+    """
+    # Спочатку пробуємо точний пошук через YT Music
+    ytm_tracks = search_album_ytmusic(album_name, limit)
+    if ytm_tracks:
+        logger.info(f"Album '{album_name}' found via YT Music: {len(ytm_tracks)} tracks")
+        return ytm_tracks
+    
+    # Fallback: звичайний пошук (як було раніше)
+    logger.info(f"Album '{album_name}' not found via YT Music, using fallback search")
     return yt_search(f"{album_name} full album", limit)
 
 def get_top100():
@@ -482,8 +582,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Альбоми
     if data == "m:albums":
         set_state(uid, "album_search")
-        prompts = {"uk":"💿 Введи назву альбому:","ru":"💿 Введи название альбома:","en":"💿 Enter album name:","de":"💿 Albumname eingeben:","fr":"💿 Entrez le nom de l'album:","es":"💿 Ingresa el nombre del álbum:","pl":"💿 Wprowadź nazwę albumu:","tr":"💿 Albüm adını girin:","ar":"💿 أدخل اسم الألبوم:","zh":"💿 输入专辑名称:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {"uk":"💿 Введи назву альбому (наприклад: «Баста Гуф 2010»):","ru":"💿 Введи название альбома:","en":"💿 Enter album name:","de":"💿 Albumname eingeben:","fr":"💿 Entrez le nom de l'album:","es":"💿 Ingresa el nombre del álbum:","pl":"💿 Wprowadź nazwę albumu:","tr":"💿 Albüm adını girin:","ar":"💿 أدخل اسم الألبوم:","zh":"💿 输入专辑名称:"}
+        # Додаємо підказку про ytmusicapi
+        hint = ""
+        if not YTMUSIC_AVAILABLE:
+            hint = "\n\n⚠️ <i>Для точного пошуку альбомів встанови: pip install ytmusicapi</i>"
+        await q.message.edit_text(prompts.get(l, prompts["en"]) + hint, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
     # Топ 100
@@ -542,14 +646,21 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download(q.message, t["url"], t["title"], t.get("channel",""), uid, ctx)
         return
 
-    # Завантажити по URL
+    # Завантажити по URL (через хеш)
     if data.startswith("dlurl|"):
         if not has_access(uid):
             await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
         parts = data.split("|", 3)
-        url = parts[1]
+        url_id = parts[1]
         title = parts[2] if len(parts) > 2 else "трек"
         artist = parts[3] if len(parts) > 3 else ""
+        
+        # Отримуємо реальний URL з кешу
+        cached = get_cached_url(ctx.application.bot_data, url_id)
+        url = cached.get("url", "")
+        if not url:
+            await q.message.reply_text("❌ Посилання застаріло. Спробуй знайти знову."); return
+        
         await do_download(q.message, url, title, artist, uid, ctx)
         return
 
@@ -569,16 +680,26 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("addalbum|"):
         parts = data.split("|", 2)
         album_name = parts[1]
-        album_url = parts[2] if len(parts) > 2 else ""
+        album_url_id = parts[2] if len(parts) > 2 else ""
+        # Отримуємо URL з кешу
+        cached = get_cached_url(ctx.application.bot_data, album_url_id)
+        album_url = cached.get("url", "")
         added = add_library(uid, album_name, "Album", album_url, kind="album")
         await q.answer("✅ Альбом додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
         return
 
-    # Додати трек в бібліотеку
+    # Додати трек в бібліотеку (через хеш)
     if data.startswith("addlib|"):
-        parts = data.split("|", 3)
-        url, title = parts[1], parts[2]
-        artist = parts[3] if len(parts) > 3 else ""
+        url_id = data[7:]  # тепер це хеш, не URL
+        cached = get_cached_url(ctx.application.bot_data, url_id)
+        url = cached.get("url", "")
+        title = cached.get("title", "Unknown")
+        artist = cached.get("artist", "")
+        
+        if not url:
+            await q.answer("❌ Посилання застаріло. Спробуй завантажити знову.", show_alert=True)
+            return
+            
         added = add_library(uid, title, artist, url)
         await q.answer("✅ Додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
         return
@@ -688,11 +809,12 @@ async def do_search(update, query, uid, ctx):
 
 # ─── Альбом ───────────────────────────────────────────────────────────────────
 async def do_album_search(update, album_name, uid, ctx):
+    l = get_lang(uid)
     msg = await update.message.reply_text(f"💿 Шукаю альбом: <b>{album_name}</b>…", parse_mode="HTML")
     tracks = await async_album(album_name, 20)
 
     if not tracks:
-        await msg.edit_text("😔 Альбом не знайдено."); return
+        await msg.edit_text("😔 Альбом не знайдено.\n\nСпробуй написати точніше: «Артист Назва Альбому»\nНаприклад: «Баста Гуф 2010»"); return
 
     ck = f"alb_{uid}_{msg.message_id}"
     ctx.application.bot_data.setdefault("cache", {})[ck] = tracks
@@ -701,15 +823,21 @@ async def do_album_search(update, album_name, uid, ctx):
     for i, t in enumerate(tracks):
         kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
 
-    # Кнопка "Додати альбом в бібліотеку"
+    # Кнопка "Додати альбом в бібліотеку" — використовуємо хеш замість URL
     first_url = tracks[0]["url"] if tracks else ""
+    url_id = cache_url(ctx.application.bot_data, first_url, album_name, "Album")
+    
     add_labels = {"uk":"📚 Додати альбом в бібліотеку","ru":"📚 Добавить альбом в библиотеку","en":"📚 Add album to library"}
-    l = get_lang(uid)
-    kb.append([InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addalbum|{album_name}|{first_url}")])
+    kb.append([InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addalbum|{album_name}|{url_id}")])
     kb.append([back_btn(uid)])
 
+    # Показуємо звідки результати
+    source_info = ""
+    if tracks and tracks[0].get("album"):
+        source_info = f"\n\n📀 <i>Знайдено: {tracks[0]['album']}</i>"
+    
     await msg.edit_text(
-        f"💿 <b>{album_name}</b> — {len(tracks)} треків\n\nОбери пісню 👇",
+        f"💿 <b>{album_name}</b> — {len(tracks)} треків{source_info}\n\nОбери пісню 👇",
         reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML"
     )
 
@@ -722,7 +850,9 @@ async def show_artist(msg, artist, uid, ctx):
 
     kb = []
     for t in tracks:
-        kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dlurl|{t['url']}|{t['title'][:30]}|{t['channel'][:20]}")])
+        # Використовуємо хеш замість прямого URL
+        url_id = cache_url(ctx.application.bot_data, t["url"], t["title"], t.get("channel", ""))
+        kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t['channel'][:20]}")])
     kb.append([back_btn(uid)])
 
     per = 40
@@ -773,7 +903,9 @@ async def show_top100_page(msg, uid, tracks, page, edit=False):
     kb = []
     for i, t in enumerate(chunk):
         rank = t.get("rank", start + i + 1)
-        kb.append([InlineKeyboardButton(f"#{rank} {t['title'][:40]}", callback_data=f"dlurl|{t['url']}|{t['title'][:30]}")])
+        # Використовуємо хеш замість прямого URL
+        url_id = cache_url(msg.get_bot().bot_data if hasattr(msg, 'get_bot') else {}, t["url"], t["title"], "")
+        kb.append([InlineKeyboardButton(f"#{rank} {t['title'][:40]}", callback_data=f"dlurl|{url_id}|{t['title'][:30]}")])
 
     nav = []
     if page > 0: nav.append(InlineKeyboardButton("◀️", callback_data=f"t100p|{page-1}"))
@@ -801,8 +933,10 @@ async def show_library(msg, uid):
     kb = []
     for s in songs[:40]:
         icon = "💿" if s["kind"] == "album" else "🎵"
+        # Використовуємо хеш замість прямого URL
+        url_id = cache_url(msg.get_bot().bot_data if hasattr(msg, 'get_bot') else {}, s["url"], s["title"], s["artist"])
         kb.append([
-            InlineKeyboardButton(f"{icon} {s['title'][:35]}", callback_data=f"dlurl|{s['url']}|{s['title'][:30]}|{s['artist'][:20]}"),
+            InlineKeyboardButton(f"{icon} {s['title'][:35]}", callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"),
             InlineKeyboardButton("🗑", callback_data=f"libdel|{s['id']}")
         ])
     kb.append([back_btn(uid)])
@@ -886,19 +1020,35 @@ async def do_download(msg, url, title, artist, uid, ctx):
         try:
             path = await async_download(url, tmp, quality)
             if not path or not os.path.exists(path):
-                await status.edit_text("❌ Не вдалось. Спробуй іншу пісню."); return
+                await status.edit_text("❌ Не вдалось. Спробуй іншу пісню.")
+                return
 
             size = os.path.getsize(path) / 1024 / 1024
             if size > MAX_MB:
-                await status.edit_text(f"❌ Файл {size:.1f}МБ — завеликий для Telegram."); return
+                await status.edit_text(f"❌ Файл {size:.1f}МБ — завеликий для Telegram.")
+                return
 
             await status.edit_text("📤 Відправляю…")
+            
+            # ✅ Використовуємо хеш замість URL в callback_data
+            url_id = cache_url(ctx.application.bot_data, url, title, artist)
+            
             add_labels = {"uk":"📚 До бібліотеки","ru":"📚 В библиотеку","en":"📚 Add to Library"}
             kb = [[
-                InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addlib|{url}|{title[:30]}|{artist[:20]}"),
+                InlineKeyboardButton(
+                    add_labels.get(l, add_labels["en"]), 
+                    callback_data=f"addlib|{url_id}"
+                ),
             ]]
+            
             with open(path, "rb") as f:
-                await msg.reply_audio(audio=f, title=title[:64], performer=artist[:64] or None, filename=f"{title[:50]}.mp3", reply_markup=InlineKeyboardMarkup(kb))
+                await msg.reply_audio(
+                    audio=f, 
+                    title=title[:64], 
+                    performer=artist[:64] or None, 
+                    filename=f"{title[:50]}.mp3", 
+                    reply_markup=InlineKeyboardMarkup(kb)
+                )
             add_history(uid, title, artist)
             await status.delete()
 
@@ -1047,7 +1197,7 @@ async def handle_admin_input(update, ctx, state, text):
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
-    app.bot_data.update({"cache": {}, "quality": {}, "top100": []})
+    app.bot_data.update({"cache": {}, "quality": {}, "top100": [], "url_cache": {}})
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
