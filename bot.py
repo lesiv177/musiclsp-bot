@@ -767,8 +767,90 @@ def mb_format_album(release):
 
 import zipfile
 import io
+import urllib.request
+import subprocess
 
-COOKIES_PATH = "cookies.txt"  # ← Шлях до кукі в корені проєкту
+COOKIES_PATH = "cookies.txt"  # Шлях до кукі в корені проєкту
+
+# ─── Piped API: альтернативне завантаження без кукі ──────────────────────────
+PIPED_INSTANCES = [
+    "https://api.piped.projectsegfault.com",
+    "https://api.piped.mha.fi",
+    "https://pipedapi.kavin.rocks",
+    "https://api.piped.privacydev.net",
+    "https://pipedapi.adminforge.de",
+]
+
+def get_piped_streams(video_id):
+    """Отримує стріми через Piped API."""
+    for instance in PIPED_INSTANCES:
+        try:
+            url = f"{instance}/streams/{video_id}"
+            resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200:
+                data = resp.json()
+                return data
+            else:
+                logger.warning(f"Piped {instance}: status {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Piped {instance} failed: {e}")
+            continue
+    return None
+
+def download_via_piped(video_id, out_dir, quality="192"):
+    """Завантажує аудіо через Piped + конвертує в MP3."""
+    data = get_piped_streams(video_id)
+    if not data:
+        return None
+    
+    audio_streams = data.get("audioStreams", [])
+    if not audio_streams:
+        logger.warning("Piped: no audio streams")
+        return None
+    
+    # Беремо найкращий аудіо стрім
+    audio = audio_streams[0]
+    audio_url = audio.get("url")
+    if not audio_url:
+        return None
+    
+    title = data.get("title", video_id)[:50]
+    safe_title = "".join(c for c in title if c.isalnum() or c in " -_").strip()
+    
+    temp_audio = os.path.join(out_dir, f"{safe_title}_temp.m4a")
+    mp3_path = os.path.join(out_dir, f"{safe_title}.mp3")
+    
+    try:
+        # Завантажуємо аудіо
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        req = urllib.request.Request(audio_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as response:
+            with open(temp_audio, "wb") as f:
+                f.write(response.read())
+        
+        if not os.path.exists(temp_audio) or os.path.getsize(temp_audio) < 1024:
+            logger.warning("Piped: downloaded file too small")
+            return None
+        
+        # Конвертуємо в MP3 через ffmpeg
+        cmd = [
+            "ffmpeg", "-y", "-i", temp_audio,
+            "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{quality}k",
+            "-metadata", f"title={title}",
+            mp3_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        if os.path.exists(mp3_path) and os.path.getsize(mp3_path) > 1024:
+            os.remove(temp_audio)
+            return mp3_path
+        else:
+            logger.warning(f"Piped: ffmpeg failed: {result.stderr}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Piped download error: {e}")
+        return None
 
 def get_yt_opts(extra=None):
     opts = {
@@ -777,12 +859,26 @@ def get_yt_opts(extra=None):
         "referer": "https://www.youtube.com/",
         "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
         "extractor_args": {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}},
-        "cookies": COOKIES_PATH,  # ← ДОДАНО: кукі для всіх операцій
+        "cookies": COOKIES_PATH,
     }
     if extra: opts.update(extra)
     return opts
 
+def extract_video_id(url):
+    """Витягує YouTube video ID з URL."""
+    if "youtube.com/watch?v=" in url:
+        return url.split("v=")[1].split("&")[0]
+    if "youtu.be/" in url:
+        return url.split("youtu.be/")[1].split("?")[0]
+    if "youtube.com/shorts/" in url:
+        return url.split("shorts/")[1].split("?")[0]
+    return None
+
 def download_mp3(url, out_dir, quality="192"):
+    """Завантажує MP3: спочатку yt-dlp, потім Piped fallback."""
+    video_id = extract_video_id(url)
+    
+    # ── Метод 1: yt-dlp з кукі та різними клієнтами ─────────────────────────
     base_opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
@@ -791,7 +887,7 @@ def download_mp3(url, out_dir, quality="192"):
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "referer": "https://www.youtube.com/",
         "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
-        "cookies": COOKIES_PATH,  # ← ДОДАНО: кукі для завантаження!
+        "cookies": COOKIES_PATH,
     }
     clients = [
         {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
@@ -812,10 +908,19 @@ def download_mp3(url, out_dir, quality="192"):
         except Exception as e:
             err_str = str(e).lower()
             if "sign in" in err_str or "bot" in err_str:
-                logger.warning(f"Attempt {i+1}: YouTube вимагає авторизації (можливо кукі застаріли)")
+                logger.warning(f"yt-dlp attempt {i+1}: auth required")
             else:
-                logger.warning(f"Download attempt {i+1} failed: {e}")
+                logger.warning(f"yt-dlp attempt {i+1} failed: {e}")
             continue
+    
+    # ── Метод 2: Piped API fallback ─────────────────────────────────────────
+    if video_id:
+        logger.info(f"Trying Piped API for {video_id}")
+        path = download_via_piped(video_id, out_dir, quality)
+        if path:
+            logger.info(f"Piped success: {path}")
+            return path
+    
     logger.error(f"All download attempts failed for {url}")
     return None
 
