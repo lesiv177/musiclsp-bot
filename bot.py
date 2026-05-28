@@ -1317,7 +1317,9 @@ async def show_mb_album(msg, mbid, uid, ctx):
         text = "❌ Не вдалося отримати дані. Спробуй інший альбом."
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
-    ck = f"mb_alb_{uid}_{mbid}"
+    # Короткий ключ для кешу — хеш mbid, щоб не перевищувати 64 байти callback_data
+    import hashlib
+    ck = hashlib.md5(f"{uid}_{mbid}".encode()).hexdigest()[:8]
     ctx.application.bot_data.setdefault("mb_album_cache", {})[ck] = album
     ctx.application.bot_data["last_mb_album_ck"] = ck
     text = (
@@ -1332,6 +1334,7 @@ async def show_mb_album(msg, mbid, uid, ctx):
     kb = []
     for i, track in enumerate(album["tracks"]):
         text += f"{i+1}. {track['name']} — {track['duration']}\n"
+        # Короткий callback_data: mb_track|{короткий_хеш}|{індекс}
         kb.append([
             InlineKeyboardButton(
                 f"▶️ {i+1}. {track['name'][:35]} ({track['duration']})",
@@ -1451,7 +1454,7 @@ async def batch_download(msg, artist, uid, ctx):
                 path = await async_download(t["url"], tmp, quality)
                 if path and os.path.exists(path) and os.path.getsize(path) / 1024 / 1024 <= MAX_MB:
                     with open(path, "rb") as f:
-                        await msg.reply_audio(audio=f, title=t["title"][:64], performer=t["channel"][:64], filename=f"{t['title'][:50]}.mp3")
+                        await msg.reply_audio(audio=f, title=t["title'][:64], performer=t['channel'][:64], filename=f"{t['title'][:50]}.mp3")
                     add_history(uid, t["title"], t["channel"])
                     ok += 1
             except Exception as e:
