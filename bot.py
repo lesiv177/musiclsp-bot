@@ -103,7 +103,6 @@ def search_spotify_albums(query, limit=10):
     """Шукає альбоми в Spotify з кількома fallback запитами."""
     import urllib.parse
     
-    # Кілька варіантів запиту
     queries = [
         query,
         f"{query} album",
@@ -541,7 +540,6 @@ def get_spotify_album_info(album_id):
             "spotify_id": track.get("id", ""),
         })
     
-    # Додаткові сторінки треків
     next_url = album.get("tracks", {}).get("next")
     while next_url:
         try:
@@ -568,7 +566,6 @@ def get_spotify_album_info(album_id):
     tracks.sort(key=lambda x: x["track_number"])
     popularity = album.get("popularity", "—")
     
-    # Обкладинка — беремо найбільшу
     images = album.get("images", [])
     image_url = images[0].get("url", "") if images else ""
     
@@ -615,21 +612,18 @@ def find_track_for_download(track_name, artist_name):
     """
     query = f"{artist_name} {track_name}"
     
-    # 1. YouTube
     logger.info(f"🔍 Шукаю на YouTube: {query}")
     result = yt_search(query, limit=3)
     if result:
         logger.info(f"✅ Знайдено на YouTube: {result[0]['title']}")
         return {"title": result[0]["title"], "url": result[0]["url"], "source": "youtube"}
     
-    # 2. SoundCloud
     logger.info(f"🔍 Шукаю на SoundCloud: {query}")
     result = sc_search(query, limit=3)
     if result:
         logger.info(f"✅ Знайдено на SoundCloud: {result[0]['title']}")
         return {"title": result[0]["title"], "url": result[0]["url"], "source": "soundcloud"}
     
-    # 3. YouTube Music
     logger.info(f"🔍 Шукаю на YouTube Music: {query}")
     result = yt_search(f"{query} youtube music", limit=3)
     if result:
@@ -658,6 +652,115 @@ def get_top100():
     except Exception as ex:
         logger.error(f"Top100: {ex}")
         return yt_search("top hits 2024", 50)
+
+# ─── MusicBrainz API ──────────────────────────────────────────────────────────
+
+def mb_search_album(query, limit=10):
+    """
+    Шукає альбоми в MusicBrainz API.
+    """
+    import urllib.parse
+    encoded = urllib.parse.quote(query)
+    url = f"https://musicbrainz.org/ws/2/release/?query=release:{encoded}&fmt=json&limit={limit}"
+    headers = {"User-Agent": f"MusicLSP/1.0 ({AUTHOR})"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        releases = data.get("releases", [])
+        logger.info(f"🔍 MusicBrainz '{query}': {len(releases)} результатів")
+        return releases
+    except Exception as e:
+        logger.error(f"MusicBrainz search error: {e}")
+        return []
+
+def mb_get_full_album_info(mbid):
+    """
+    Отримує повну інформацію про альбом з MusicBrainz за MBID.
+    """
+    url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artists+labels&fmt=json"
+    headers = {"User-Agent": f"MusicLSP/1.0 ({AUTHOR})"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        logger.error(f"MusicBrainz release error: {e}")
+        return None
+    
+    release_group_id = data.get("release-group", {}).get("id", "")
+    image_url = ""
+    if release_group_id:
+        try:
+            cover_url = f"https://coverartarchive.org/release-group/{release_group_id}"
+            cover_resp = requests.get(cover_url, headers=headers, timeout=10)
+            if cover_resp.status_code == 200:
+                cover_data = cover_resp.json()
+                images = cover_data.get("images", [])
+                if images:
+                    image_url = images[0].get("thumbnails", {}).get("large", images[0].get("image", ""))
+        except Exception as e:
+            logger.warning(f"CoverArt error: {e}")
+    
+    tracks = []
+    total_duration_ms = 0
+    for medium in data.get("media", []):
+        for track in medium.get("tracks", []):
+            recording = track.get("recording", {})
+            dur_ms = recording.get("length", 0)
+            total_duration_ms += dur_ms
+            tracks.append({
+                "name": recording.get("title", "Unknown"),
+                "artists": ", ".join(a.get("name", "") for a in recording.get("artist-credit", [])),
+                "duration_ms": dur_ms,
+                "duration": fmt_dur_ms(dur_ms),
+                "track_number": track.get("number", 0),
+            })
+    
+    label = "—"
+    labels = data.get("label-info", [])
+    if labels:
+        label = labels[0].get("label", {}).get("name", "—")
+    
+    artists = ", ".join(a.get("name", "") for a in data.get("artist-credit", []))
+    release_date = data.get("date", "—")
+    year = release_date[:4] if release_date and len(release_date) >= 4 else "—"
+    
+    return {
+        "mbid": mbid,
+        "name": data.get("title", "Unknown Album"),
+        "artist": artists,
+        "release_date": release_date,
+        "year": year,
+        "total_tracks": len(tracks),
+        "tracks": tracks,
+        "total_duration_ms": total_duration_ms,
+        "total_duration": fmt_dur_ms(total_duration_ms),
+        "label": label,
+        "image_url": image_url,
+        "album_type": data.get("release-group", {}).get("primary-type", "album"),
+        "external_url": f"https://musicbrainz.org/release/{mbid}",
+    }
+
+def mb_format_album(release):
+    """
+    Форматує дані релізу MusicBrainz для клавіатури.
+    """
+    title = release.get("title", "Unknown")
+    artists = ", ".join(a.get("name", "") for a in release.get("artist-credit", []))
+    date = release.get("date", "—")
+    year = date[:4] if date and len(date) >= 4 else "—"
+    track_count = 0
+    for medium in release.get("media", []):
+        track_count += medium.get("track-count", 0)
+    return {
+        "mbid": release.get("id", ""),
+        "name": title,
+        "artist": artists,
+        "year": year,
+        "total_tracks": track_count,
+        "release_date": date,
+    }
 # ============================================================
 #  MusicLSP — Частина 2: Завантаження, асинхронні обгортки, клавіатури
 # ============================================================
