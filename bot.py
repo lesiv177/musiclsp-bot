@@ -719,6 +719,12 @@ async def async_spotify_album_info(album_id):
 async def async_search_spotify(query, limit=10):
     return await asyncio.get_event_loop().run_in_executor(None, search_spotify_and_format, query, limit)
 
+async def async_mb_search(query, limit=10):
+    return await asyncio.get_event_loop().run_in_executor(None, mb_search_album, query, limit)
+
+async def async_mb_full_info(mbid):
+    return await asyncio.get_event_loop().run_in_executor(None, mb_get_full_album_info, mbid)
+
 async def async_find_track(track_name, artist_name):
     return await asyncio.get_event_loop().run_in_executor(None, find_track_for_download, track_name, artist_name)
 
