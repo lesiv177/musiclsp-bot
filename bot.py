@@ -1623,7 +1623,7 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
         all_label = f"🎤 Всі пісні ({max_songs})" if max_songs > 0 else "🎤 Всі пісні (Premium)"
         kb.append([
             InlineKeyboardButton(all_label, callback_data="artist_input"),
-            InlineKeyboardButton(dl_label, callback_data="dl20_input" if is_premium(uid) else "m:premium_menu"),
+            InlineKeyboardButton(dl_label, callback_data="dl20_input" if is_premium(uid) else "m:sub"),
         ])
     kb.append([back_btn(uid)])
     text = f"🎶 <b>{query}</b> — {start+1}-{min(end, len(all_tracks))} з {len(all_tracks)}\n\nОбери пісню 👇"
@@ -1813,7 +1813,6 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
 # ─── ZIP альбом пошук (для Premium меню) ──────────────────────────────────────
 async def do_zip_album_search(update, query, uid, ctx):
     msg = await update.message.reply_text(f"📦 Шукаю альбом для ZIP: <b>{query}</b>…", parse_mode="HTML")
-    # Шукаємо в Spotify та MusicBrainz
     spotify_results = await async_search_spotify(query, limit=5)
     mb_results = await async_mb_search(query, limit=5)
     
@@ -1880,7 +1879,7 @@ async def batch_download(msg, artist, uid, ctx, size=20):
         await status.edit_text(f"⬇️ {i+1}/{size}: <b>{t['title'][:40]}</b>…", parse_mode="HTML")
         with tempfile.TemporaryDirectory() as tmp:
             try:
-                path = await async_download(t["url"], tmp, quality)
+                path = await async_download_with_fallback(t["url"], tmp, quality)
                 if path and os.path.exists(path) and os.path.getsize(path) / 1024 / 1024 <= MAX_MB:
                     with open(path, "rb") as f:
                         await msg.reply_audio(audio=f, title=t["title"][:64], performer=t["channel"][:64], filename=f"{t['title'][:50]}.mp3")
@@ -1950,11 +1949,11 @@ async def show_profile(msg, uid):
     except:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
-# ─── Підписка ─────────────────────────────────────────────────────────────────
+# ─── Підписка (ОНОВЛЕНА — Premium функції прямо тут) ───────────────────────────
 async def show_sub(msg, uid):
     l = get_lang(uid)
     premium = is_premium(uid)
-    status_icon = "✅ Активний" if premium else "💿 Free"
+    status_icon = "✅ Premium" if premium else "💿 Free"
     
     text = (
         f"💎 <b>Підписка</b>\n\n"
@@ -1978,13 +1977,13 @@ async def show_sub(msg, uid):
             f"• AI рекомендації\n"
             f"• Batch download: 20/50/100\n"
             f"• Розширена статистика\n\n"
-            f"💰 Оплата: {AUTH_BOT}"
+            f"💰 Оформити Premium: {AUTH_BOT}"
         )
     else:
         text += (
             f"⭐ <b>Premium активовано!</b>\n\n"
-            f"Всі функції доступні ✅\n\n"
-            f"🎵 Якість: {ctx.application.bot_data.get('quality', {}).get(uid, DEF_QUALITY)}kbps\n"
+            f"Всі функції доступні 👇\n\n"
+            f"🎵 Якість: {msg._bot.bot_data.get('quality', {}).get(uid, DEF_QUALITY)}kbps\n"
             f"📚 Бібліотека: необмежена\n"
             f"📦 ZIP: доступно\n"
             f"📻 Радіо: доступно\n"
@@ -1995,9 +1994,25 @@ async def show_sub(msg, uid):
     kb = []
     if not premium:
         kb.append([InlineKeyboardButton("💳 Оформити Premium", url=f"https://t.me/{AUTH_BOT.replace('@', '')}")])
-    kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
-    if premium:
-        kb.append([InlineKeyboardButton("💎 Premium Меню", callback_data="m:premium_menu")])
+        kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
+    else:
+        kb.append([
+            InlineKeyboardButton("📦 ZIP Альбоми", callback_data="m:zip_albums"),
+            InlineKeyboardButton("📋 Плейлисти", callback_data="m:playlists")
+        ])
+        kb.append([
+            InlineKeyboardButton("📻 Радіо", callback_data="m:radio"),
+            InlineKeyboardButton("🎵 Розпізнавання", callback_data="m:recognition")
+        ])
+        kb.append([
+            InlineKeyboardButton("📊 Статистика", callback_data="m:stats"),
+            InlineKeyboardButton("🎤 Тексти", callback_data="m:lyrics")
+        ])
+        kb.append([
+            InlineKeyboardButton("🤖 AI Рекомендації", callback_data="m:ai_recommend")
+        ])
+        kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
+    
     kb.append([back_btn(uid)])
     
     try:
@@ -2005,7 +2020,7 @@ async def show_sub(msg, uid):
     except:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── Реферал (прибрано нарахування днів, просто статистика) ───────────────────
+# ─── Реферал ──────────────────────────────────────────────────────────────────
 async def show_ref(msg, uid, ctx):
     bot_info = await ctx.bot.get_me()
     link = f"https://t.me/{bot_info.username}?start={uid}"
@@ -2094,23 +2109,19 @@ async def show_playlist(msg, pid, uid, ctx):
 async def start_radio(msg, seed, uid, ctx):
     status = await msg.reply_text(f"📻 Створюю радіо на основі <b>{seed}</b>…", parse_mode="HTML")
     
-    # Шукаємо схожі треки
     seed_tracks = await async_search(seed, limit=5)
     if not seed_tracks:
         await status.edit_text("😔 Не вдалося створити радіо. Спробуй інший запит.")
         return
     
-    # Генеруємо радіо плейлист (схожі артисти)
     radio_tracks = []
     for t in seed_tracks[:2]:
         similar = await async_artist(t.get("channel", seed), 10)
         radio_tracks.extend(similar)
     
-    # Додаємо випадкові треки
     random_tracks = await async_search("popular music 2024", limit=10)
     radio_tracks.extend(random_tracks)
     
-    # Перемішуємо
     random.shuffle(radio_tracks)
     radio_tracks = radio_tracks[:30]
     
@@ -2118,12 +2129,10 @@ async def start_radio(msg, seed, uid, ctx):
         await status.edit_text("😔 Не вдалося створити радіо.")
         return
     
-    # Зберігаємо сесію
     rid = create_radio_session(uid, seed, seed_tracks[0]["title"] if seed_tracks else seed, radio_tracks)
     
     await status.delete()
     
-    # Показуємо перший трек
     first = radio_tracks[0]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏭ Наступна", callback_data=f"radio_next|{rid}")],
@@ -2140,7 +2149,6 @@ async def start_radio(msg, seed, uid, ctx):
         parse_mode="HTML"
     )
     
-    # Відправляємо перший трек
     await do_download(msg, first["url"], first["title"], first.get("channel", ""), uid, ctx)
 
 # ─── Статистика прослуховування ───────────────────────────────────────────────
@@ -2177,15 +2185,9 @@ async def show_stats(msg, uid):
 async def search_lyrics(msg, query, uid, ctx):
     status = await msg.reply_text(f"🎤 Шукаю текст: <b>{query}</b>…", parse_mode="HTML")
     
-    # Використовуємо Genius API (потрібен токен) або публічний пошук
-    # Для демо — пошук через текстові джерела
     try:
-        # Спробуємо знайти через пошук
-        search_query = f"{query} lyrics"
-        # Імітація — в реальному боті тут був би запит до Genius API
         await asyncio.sleep(1)
         
-        # Демо відповідь
         demo_lyrics = (
             f"🎤 <b>Текст пісні:</b> {query}\n\n"
             f"<i>[Текст недоступний у демо режимі]</i>\n\n"
@@ -2202,7 +2204,6 @@ async def search_lyrics(msg, query, uid, ctx):
 async def ai_recommend(msg, seed, uid, ctx):
     status = await msg.reply_text(f"🤖 Генерую AI рекомендації на основі <b>{seed}</b>…", parse_mode="HTML")
     
-    # Шукаємо схожу музику
     similar_queries = [
         f"{seed} similar",
         f"artists like {seed}",
@@ -2216,7 +2217,6 @@ async def ai_recommend(msg, seed, uid, ctx):
         all_tracks.extend(tracks)
         await asyncio.sleep(0.3)
     
-    # Фільтруємо унікальні
     seen = set()
     unique_tracks = []
     for t in all_tracks:
