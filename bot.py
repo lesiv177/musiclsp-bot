@@ -1,8 +1,8 @@
 # ============================================================
-#  MusicLSP v2.0 — Free & Premium
+#  MusicLSP v2.0 — Free & Premium (Виправлене завантаження)
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json, io, random
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json, io, random, subprocess
 import static_ffmpeg
 import requests
 
@@ -418,10 +418,93 @@ def update_radio_idx(rid, idx):
     with db() as c:
         c.execute("UPDATE radio_sessions SET current_idx=?, updated=? WHERE id=?", (idx, now, rid))
 
-# ─── Музика: YouTube/SoundCloud пошук ─────────────────────────────────────────
+# ─── COOKIES МЕНЕДЖМЕНТ ───────────────────────────────────────────────────────
+COOKIES_PATH = "youtube_cookies.txt"
+COOKIES_JSON_PATH = "youtube_cookies.json"
+COOKIES_LOCK = asyncio.Lock()
 
-# ─── YouTube клієнти ──────────────────────────────────────────────────────────
+def are_cookies_fresh(path=COOKIES_PATH, max_age_hours=4):
+    """Перевіряє чи cookies свіжі."""
+    if not os.path.exists(path):
+        return False
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+    age = datetime.datetime.now() - mtime
+    return age < datetime.timedelta(hours=max_age_hours)
+
+def convert_cookies_json_to_netscape(json_path=COOKIES_JSON_PATH, netscape_path=COOKIES_PATH):
+    """Конвертує cookies з JSON в Netscape format."""
+    if not os.path.exists(json_path):
+        return False
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            cookies = json.load(f)
+        lines = ["# Netscape HTTP Cookie File"]
+        for c in cookies:
+            domain = c.get('domain', '.youtube.com')
+            if not domain.startswith('.'):
+                domain = '.' + domain
+            flag = "TRUE"
+            path = c.get('path', '/')
+            secure = "TRUE" if c.get('secure', True) else "FALSE"
+            expiry = str(int(c.get('expires', (datetime.datetime.now() + datetime.timedelta(days=7)).timestamp())))
+            name = c.get('name', '')
+            value = c.get('value', '')
+            if name and value:
+                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
+        with open(netscape_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+        logger.info(f"Cookies converted: {len(cookies)} items")
+        return True
+    except Exception as e:
+        logger.error(f"Cookie convert error: {e}")
+        return False
+
+async def refresh_youtube_cookies_via_playwright():
+    """Оновлює cookies через playwright."""
+    try:
+        from playwright.async_api import async_playwright
+        logger.info("Starting browser for cookie refresh...")
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+            await page.goto("https://music.youtube.com", wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+            # Приймаємо cookies банер
+            try:
+                accept_btn = await page.wait_for_selector('button[aria-label="Accept all"]', timeout=3000)
+                if accept_btn:
+                    await accept_btn.click()
+                    await page.wait_for_timeout(2000)
+            except:
+                pass
+            cookies = await context.cookies()
+            with open(COOKIES_JSON_PATH, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f, ensure_ascii=False, indent=2)
+            await browser.close()
+            convert_cookies_json_to_netscape()
+            logger.info(f"Cookies refreshed: {len(cookies)} items")
+            return True
+    except ImportError:
+        logger.warning("playwright not installed. pip install playwright && playwright install chromium")
+        return False
+    except Exception as e:
+        logger.error(f"Playwright error: {e}")
+        return False
+
+async def ensure_fresh_cookies():
+    """Гарантує свіжі cookies."""
+    async with COOKIES_LOCK:
+        if not are_cookies_fresh(max_age_hours=3):
+            return await refresh_youtube_cookies_via_playwright()
+        return True
+
+# ─── YouTube клієнти (ОНОВЛЕНІ — більше клієнтів, кращий порядок) ────────────
 YT_CLIENTS = [
+    {"player_client": ["android_music"], "player_skip": ["webpage", "configs", "js"]},
+    {"player_client": ["android_creator"], "player_skip": ["webpage", "configs", "js"]},
     {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]},
     {"player_client": ["ios"], "player_skip": ["webpage", "configs", "js"]},
     {"player_client": ["tv_embedded"], "player_skip": ["webpage", "configs", "js"]},
@@ -432,17 +515,28 @@ YT_CLIENTS = [
 def get_yt_opts(extra=None, client_idx=0):
     opts = {
         "quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 3,
+        "extractor_retries": 3,
+        "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "referer": "https://www.youtube.com/",
         "headers": {
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         },
         "extractor_args": {"youtube": YT_CLIENTS[client_idx]},
     }
     if extra: opts.update(extra)
     return opts
 
+# ─── Пошук YouTube/SoundCloud ─────────────────────────────────────────────────
 def yt_search(query, limit=10):
     for i, client in enumerate(YT_CLIENTS):
         try:
@@ -466,7 +560,7 @@ def yt_search(query, limit=10):
                 logger.info(f"yt_search success via {client['player_client'][0]}: {len(tracks)} results")
                 return tracks
         except Exception as e:
-            logger.warning(f"yt_search {client['player_client'][0]} failed: {e}")
+            logger.warning(f"yt_search {client['player_client'][0]} failed: {str(e)[:100]}")
             continue
     logger.error("yt_search: all clients failed")
     return []
@@ -715,6 +809,9 @@ async def async_artist(artist, limit=50):
     return await asyncio.get_event_loop().run_in_executor(None, artist_songs, artist, limit)
 
 async def async_download(url, out_dir, quality="192"):
+    # Оновлюємо cookies перед завантаженням якщо потрібно
+    if os.path.exists(COOKIES_PATH):
+        await ensure_fresh_cookies()
     return await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
 
 async def async_spotify_album_info(album_id):
@@ -732,43 +829,155 @@ async def async_mb_full_info(mbid):
 async def async_find_track(track_name, artist_name):
     return await asyncio.get_event_loop().run_in_executor(None, find_track_for_download, track_name, artist_name)
 
-# ─── Завантаження MP3 ─────────────────────────────────────────────────────────
-COOKIES_PATH = "youtube_cookies.txt"
-
+# ─── ОНОВЛЕНЕ Завантаження MP3 з кращою обробкою ────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
+    """
+    Завантажує MP3 з YouTube з автоматичним fallback на різні клієнти.
+    Пріоритет: android_music → android_creator → android → ios → tv → web_embedded → web
+    """
     base_opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
         "postprocessors": [{
-            "key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality
+            "key": "FFmpegExtractAudio", 
+            "preferredcodec": "mp3", 
+            "preferredquality": quality
         }],
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "quiet": True, 
+        "no_warnings": True, 
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 3,
+        "extractor_retries": 3,
+        "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "referer": "https://www.youtube.com/",
         "headers": {
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+            "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
         },
     }
+    
     last_error = None
+    tried_clients = []
+    
     for i, client in enumerate(YT_CLIENTS):
         try:
             opts = dict(base_opts)
             opts["extractor_args"] = {"youtube": client}
-            if client["player_client"] == ["web"] and os.path.exists(COOKIES_PATH):
+            
+            # Додаємо cookies ТІЛЬКИ для web клієнтів і ТІЛЬКИ якщо є файл
+            client_name = client["player_client"][0]
+            if "web" in client_name and os.path.exists(COOKIES_PATH):
                 opts["cookies"] = COOKIES_PATH
+                logger.info(f"Using cookies for {client_name}")
+            
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
+                
                 if info:
+                    # Шукаємо MP3 файл
                     mp3_files = list(Path(out_dir).glob("*.mp3"))
-                    if mp3_files: return str(mp3_files[0])
-                    for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg"]:
+                    if mp3_files:
+                        logger.info(f"Download success via {client_name}: {mp3_files[0].name}")
+                        return str(mp3_files[0])
+                    
+                    # Якщо не MP3 — конвертуємо з інших форматів
+                    for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
                         files = list(Path(out_dir).glob(ext))
-                        if files: return str(files[0])
+                        if files:
+                            input_file = str(files[0])
+                            output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
+                            try:
+                                subprocess.run([
+                                    "ffmpeg", "-i", input_file, 
+                                    "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{quality}k",
+                                    "-y", output_file
+                                ], check=True, capture_output=True, timeout=60)
+                                if os.path.exists(output_file):
+                                    os.remove(input_file)
+                                    logger.info(f"Converted to MP3 via ffmpeg: {output_file}")
+                                    return output_file
+                            except Exception as conv_e:
+                                logger.warning(f"FFmpeg conversion failed: {conv_e}")
+                                return input_file
+                        
         except Exception as e:
             last_error = e
+            client_name = client["player_client"][0]
+            tried_clients.append(client_name)
+            err_str = str(e).lower()
+            
+            if "sign in" in err_str or "login" in err_str:
+                logger.warning(f"{client_name}: Sign in required")
+            elif "bot" in err_str or "automated" in err_str:
+                logger.warning(f"{client_name}: Bot detection")
+            elif "unavailable" in err_str:
+                logger.warning(f"{client_name}: Video unavailable")
+            elif "age" in err_str:
+                logger.warning(f"{client_name}: Age restricted")
+            elif "private" in err_str:
+                logger.warning(f"{client_name}: Private video")
+            elif "copyright" in err_str or "blocked" in err_str:
+                logger.warning(f"{client_name}: Copyright/blocked")
+            else:
+                logger.warning(f"{client_name} failed: {str(e)[:100]}")
             continue
-    logger.error(f"All download attempts failed for {url}. Last error: {last_error}")
+    
+    logger.error(f"All download attempts failed. Tried: {', '.join(tried_clients)}. Last error: {last_error}")
+    return None
+
+# ─── Альтернативне завантаження (fallback) ─────────────────────────────────────
+def download_mp3_alternative(url, out_dir, quality="192"):
+    """
+    Альтернативний метод з іншими параметрами.
+    """
+    opts = {
+        "format": "ba/b",
+        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio", 
+            "preferredcodec": "mp3", 
+            "preferredquality": quality
+        }],
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "extract_flat": False,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if info:
+                mp3_files = list(Path(out_dir).glob("*.mp3"))
+                if mp3_files:
+                    return str(mp3_files[0])
+    except Exception as e:
+        logger.warning(f"Alternative download failed: {e}")
+    
+    return None
+
+# ─── Оновлена асинхронна обгортка з fallback ─────────────────────────────────
+async def async_download_with_fallback(url, out_dir, quality="192"):
+    # Спробуємо основний метод
+    result = await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
+    if result:
+        return result
+    
+    # Fallback на альтернативний метод
+    logger.info("Trying alternative download method...")
+    result = await asyncio.get_event_loop().run_in_executor(None, download_mp3_alternative, url, out_dir, quality)
+    if result:
+        return result
+    
     return None
 
 # ─── ZIP-архів для альбому ────────────────────────────────────────────────────
@@ -782,7 +991,7 @@ async def create_album_zip(tracks, quality="192"):
             for i, track in enumerate(tracks):
                 if not track.get("url"): continue
                 try:
-                    path = await async_download(track["url"], tmp, quality)
+                    path = await async_download_with_fallback(track["url"], tmp, quality)
                     if path and os.path.exists(path):
                         safe_name = f"{i+1:02d}. {track['title'][:50]}.mp3"
                         zf.write(path, safe_name)
