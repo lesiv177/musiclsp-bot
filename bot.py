@@ -99,14 +99,51 @@ def get_spotify_album(album_id):
     """Отримує інфу про альбом з Spotify."""
     return spotify_request(f"albums/{album_id}")
 
-def search_spotify_albums(query, limit=5):
-    """Шукає альбоми в Spotify."""
+def search_spotify_albums_raw(query, limit=10):
+    """Сирий пошук альбомів в Spotify."""
     import urllib.parse
     q = urllib.parse.quote(query)
-    data = spotify_request(f"search?q={q}&type=album&limit={limit}")
+    endpoint = f"search?q={q}&type=album&limit={limit}&include_external=audio"
+    data = spotify_request(endpoint)
     if data and "albums" in data:
-        return data["albums"].get("items", [])
+        items = data["albums"].get("items", [])
+        logger.info(f"🔍 Spotify пошук '{query}': знайдено {len(items)} альбомів")
+        return items
+    logger.warning(f"🔍 Spotify пошук '{query}': нічого не знайдено або помилка")
     return []
+
+def search_spotify_albums(query, limit=10):
+    """
+    РОЗШИРЕНИЙ ПОШУК Spotify.
+    Пробує кілька варіантів запиту щоб точно знайти альбом.
+    """
+    # Варіанти запитів для пошуку
+    queries = [
+        query,                              # Оригінал
+        f"{query} album",                   # З "album"
+        f"album:{query}",                   # Spotify syntax: album:name
+        query.replace(" ", "+"),            # Без екранування (Spotify іноді краще розуміє)
+    ]
+    
+    # Якщо в запиті немає "album" — додаємо ще варіанти
+    if "album" not in query.lower():
+        queries.insert(1, f"{query} album")
+    
+    all_items = []
+    seen_ids = set()
+    
+    for q in queries:
+        items = search_spotify_albums_raw(q, limit=limit)
+        for item in items:
+            item_id = item.get("id")
+            if item_id and item_id not in seen_ids:
+                seen_ids.add(item_id)
+                all_items.append(item)
+        if len(all_items) >= 5:
+            break  # Достатньо результатів
+    
+    logger.info(f"🔍 Розширений пошук '{query}': унікальних альбомів {len(all_items)}")
+    return all_items
 
 def fmt_dur_ms(ms):
     """Форматує мілісекунди в MM:SS або H:MM:SS."""
@@ -593,7 +630,7 @@ def get_spotify_album_info(album_id):
         "external_url": album.get("external_urls", {}).get("spotify", f"https://open.spotify.com/album/{album_id}"),
     }
 
-def search_spotify_and_format(query, limit=5):
+def search_spotify_and_format(query, limit=10):
     """Шукає альбоми в Spotify і форматує для відображення."""
     albums = search_spotify_albums(query, limit)
     results = []
