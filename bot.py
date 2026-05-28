@@ -1332,11 +1332,12 @@ async def show_mb_album(msg, mbid, uid, ctx):
         text = "❌ Не вдалося отримати дані. Спробуй інший альбом."
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
-    # Короткий ключ для кешу — хеш mbid, щоб не перевищувати 64 байти callback_data
+    
     import hashlib
     ck = hashlib.md5(f"{uid}_{mbid}".encode()).hexdigest()[:8]
     ctx.application.bot_data.setdefault("mb_album_cache", {})[ck] = album
     ctx.application.bot_data["last_mb_album_ck"] = ck
+    
     text = (
         f"📀 <b>{album['name']}</b>\n\n"
         f"🎤 <b>Виконавець:</b> {album['artist']}\n"
@@ -1349,7 +1350,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
     kb = []
     for i, track in enumerate(album["tracks"]):
         text += f"{i+1}. {track['name']} — {track['duration']}\n"
-        # Короткий callback_data: mb_track|{короткий_хеш}|{індекс}
         kb.append([
             InlineKeyboardButton(
                 f"▶️ {i+1}. {track['name'][:35]} ({track['duration']})",
@@ -1364,10 +1364,13 @@ async def show_mb_album(msg, mbid, uid, ctx):
         InlineKeyboardButton(add_label, callback_data=f"mb_addlib|{ck}")
     ])
     kb.append([back_btn(uid)])
+    
     try:
         await status.delete()
     except:
         pass
+    
+    # ← ДОДАНО: Відправляємо обкладинку як фото з caption
     if album.get("image_url"):
         try:
             await msg.reply_photo(
@@ -1376,11 +1379,12 @@ async def show_mb_album(msg, mbid, uid, ctx):
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="HTML"
             )
+            return  # Виходимо, якщо фото відправлено
         except Exception as e:
-            logger.warning(f"Photo send failed: {e}")
-            await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    else:
-        await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+            logger.warning(f"MB Photo send failed: {e}")
+    
+    # Якщо фото не відправилось — відправляємо текст
+    await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
 async def do_download_mb_album_zip(msg, album_data, uid, ctx):
@@ -1426,6 +1430,32 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
         return
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
+    
+    # ← ДОДАНО: Відправляємо ZIP з обкладинкою як thumbnail (якщо є)
+    thumb = album_data.get("image_url", "")
+    if thumb:
+        try:
+            # Завантажуємо обкладинку для thumbnail
+            thumb_resp = requests.get(thumb, timeout=10)
+            if thumb_resp.status_code == 200:
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_thumb:
+                    tmp_thumb.write(thumb_resp.content)
+                    tmp_thumb.flush()
+                    await msg.reply_document(
+                        document=zip_buffer,
+                        thumbnail=tmp_thumb.name,  # Обкладинка для ZIP
+                        filename=f"{safe_name}.zip",
+                        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+                        parse_mode="HTML"
+                    )
+                    os.unlink(tmp_thumb.name)
+                    await status.delete()
+                    return
+        except Exception as e:
+            logger.warning(f"ZIP thumbnail failed: {e}")
+    
+    # Якщо обкладинка не спрацювала — без неї
     await msg.reply_document(
         document=zip_buffer,
         filename=f"{safe_name}.zip",
@@ -1636,6 +1666,150 @@ async def do_download(msg, url, title, artist, uid, ctx):
             logger.error(f"Download unexpected error: {e}")
             await status.edit_text("❌ Помилка завантаження. Спробуй іншу пісню.")
 
+# ─── Spotify: Показати альбом ───────────────────────────────────────────────
+async def show_spotify_album(msg, album_id, uid, ctx):
+    """Показує інформацію про Spotify альбом з обкладинкою."""
+    l = get_lang(uid)
+    status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
+    
+    album = await async_spotify_album_info(album_id)
+    if not album:
+        await status.edit_text("❌ Не вдалося отримати дані. Спробуй інший альбом.")
+        return
+    
+    # Кешуємо альбом
+    import hashlib
+    ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
+    ctx.application.bot_data.setdefault("spotify_album_cache", {})[ck] = album
+    ctx.application.bot_data["last_spotify_album_ck"] = ck
+    
+    text = (
+        f"📀 <b>{album['name']}</b>\n\n"
+        f"🎤 <b>Виконавець:</b> {album['artist']}\n"
+        f"📅 <b>Рік:</b> {album['year']}\n"
+        f"🏷 <b>Лейбл:</b> {album['label']}\n"
+        f"🎵 <b>Треків:</b> {album['total_tracks']}\n"
+        f"⏱ <b>Тривалість:</b> {album['total_duration']}\n"
+        f"🔥 <b>Популярність:</b> {album['popularity']}/100\n\n"
+        f"🎧 <b>Треки:</b>\n"
+    )
+    
+    kb = []
+    for i, track in enumerate(album["tracks"]):
+        text += f"{i+1}. {track['name']} — {track['duration']}\n"
+        kb.append([
+            InlineKeyboardButton(
+                f"▶️ {i+1}. {track['name'][:35]} ({track['duration']})",
+                callback_data=f"sp_track|{ck}|{i}"
+            )
+        ])
+    
+    zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
+    add_label = {"uk":"📚 Додати в бібліотеку","ru":"📚 Добавить в библиотеку","en":"📚 Add to Library"}.get(l, "📚 Add to Library")
+    kb.append([
+        InlineKeyboardButton(zip_label, callback_data="sp_albumzip"),
+        InlineKeyboardButton(add_label, callback_data=f"sp_addlib|{ck}")
+    ])
+    kb.append([back_btn(uid)])
+    
+    try:
+        await status.delete()
+    except:
+        pass
+    
+    # ← ДОДАНО: Відправляємо обкладинку як фото з caption
+    if album.get("image_url"):
+        try:
+            await msg.reply_photo(
+                photo=album["image_url"],
+                caption=text[:1024],
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode="HTML"
+            )
+            return  # Виходимо, якщо фото відправлено
+        except Exception as e:
+            logger.warning(f"Spotify Photo send failed: {e}")
+    
+    # Якщо фото не відправилось — текст
+    await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+# ─── Spotify: Завантажити ZIP ───────────────────────────────────────────────
+async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
+    l = get_lang(uid)
+    status = await msg.reply_text(
+        f"⬇️ Завантажую альбом: <b>{album_data['name']}</b>\n"
+        f"<i>Шукаю треки: SoundCloud → Spotify → YouTube → YT Music…</i>",
+        parse_mode="HTML"
+    )
+    quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    tracks_with_url = []
+    total = len(album_data["tracks"])
+    for i, track in enumerate(album_data["tracks"]):
+        await status.edit_text(
+            f"🔍 {i+1}/{total}: <b>{track['name']}</b>…",
+            parse_mode="HTML"
+        )
+        result = await async_find_track(track["name"], track["artists"])
+        if result:
+            tracks_with_url.append({
+                "title": f"{track['artists']} — {track['name']}",
+                "url": result["url"],
+                "source": result["source"],
+            })
+        await asyncio.sleep(0.3)
+    if not tracks_with_url:
+        await status.edit_text("😔 Не знайдено жодного трека.")
+        return
+    sources = ", ".join(set(t["source"] for t in tracks_with_url))
+    await status.edit_text(
+        f"⬇️ Завантажую {len(tracks_with_url)}/{total} треків…\n"
+        f"<i>Джерела: {sources}</i>\n"
+        f"<i>Формується ZIP…</i>",
+        parse_mode="HTML"
+    )
+    zip_buffer = await create_album_zip(tracks_with_url, quality)
+    if not zip_buffer:
+        await status.edit_text("❌ Помилка створення архіву.")
+        return
+    size_mb = len(zip_buffer.getvalue()) / 1024 / 1024
+    if size_mb > 2000:
+        await status.edit_text(f"❌ Архів {size_mb:.1f} МБ — завеликий.")
+        return
+    await status.edit_text("📤 Відправляю ZIP…")
+    safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
+    
+    # ← ДОДАНО: Відправляємо ZIP з обкладинкою як thumbnail
+    thumb = album_data.get("image_url", "")
+    if thumb:
+        try:
+            thumb_resp = requests.get(thumb, timeout=10)
+            if thumb_resp.status_code == 200:
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_thumb:
+                    tmp_thumb.write(thumb_resp.content)
+                    tmp_thumb.flush()
+                    await msg.reply_document(
+                        document=zip_buffer,
+                        thumbnail=tmp_thumb.name,
+                        filename=f"{safe_name}.zip",
+                        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+                        parse_mode="HTML"
+                    )
+                    os.unlink(tmp_thumb.name)
+                    await status.delete()
+                    return
+        except Exception as e:
+            logger.warning(f"Spotify ZIP thumbnail failed: {e}")
+    
+    # Без обкладинки
+    await msg.reply_document(
+        document=zip_buffer,
+        filename=f"{safe_name}.zip",
+        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+        parse_mode="HTML"
+    )
+    await status.delete()
+
 # ─── Адмін ────────────────────────────────────────────────────────────────────
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -1759,6 +1933,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.bot_data.update({
         "cache": {}, "quality": {}, "top100": [], "url_cache": {},
+        "spotify_album_cache": {}, "last_spotify_album_ck": "",
         "mb_album_cache": {}, "last_mb_album_ck": ""
     })
     app.add_handler(CommandHandler("start", cmd_start))
