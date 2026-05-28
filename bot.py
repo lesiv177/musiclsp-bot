@@ -768,6 +768,20 @@ def mb_format_album(release):
 import zipfile
 import io
 
+COOKIES_PATH = "cookies.txt"  # ← Шлях до кукі в корені проєкту
+
+def get_yt_opts(extra=None):
+    opts = {
+        "quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "referer": "https://www.youtube.com/",
+        "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
+        "extractor_args": {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}},
+        "cookies": COOKIES_PATH,  # ← ДОДАНО: кукі для всіх операцій
+    }
+    if extra: opts.update(extra)
+    return opts
+
 def download_mp3(url, out_dir, quality="192"):
     base_opts = {
         "format": "bestaudio/best",
@@ -777,6 +791,7 @@ def download_mp3(url, out_dir, quality="192"):
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "referer": "https://www.youtube.com/",
         "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
+        "cookies": COOKIES_PATH,  # ← ДОДАНО: кукі для завантаження!
     }
     clients = [
         {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
@@ -797,7 +812,7 @@ def download_mp3(url, out_dir, quality="192"):
         except Exception as e:
             err_str = str(e).lower()
             if "sign in" in err_str or "bot" in err_str:
-                logger.warning(f"Attempt {i+1}: YouTube вимагає авторизації")
+                logger.warning(f"Attempt {i+1}: YouTube вимагає авторизації (можливо кукі застаріли)")
             else:
                 logger.warning(f"Download attempt {i+1} failed: {e}")
             continue
