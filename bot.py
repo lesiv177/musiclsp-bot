@@ -1105,6 +1105,60 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ctx.application.bot_data.setdefault("quality", {})[uid] = q_val
         await q.answer(f"✅ Якість: {q_val} kbps", show_alert=True)
         return
+
+    # MusicBrainz альбом
+    if data.startswith("mb_album|"):
+        mbid = data.split("|", 1)[1]
+        if not has_access(uid):
+            await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
+        await show_mb_album(q.message, mbid, uid, ctx)
+        return
+
+    # Завантажити трек з MB альбому
+    if data.startswith("mb_track|"):
+        if not has_access(uid):
+            await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
+        parts = data.split("|", 2)
+        album_ck = parts[1]
+        track_idx = int(parts[2])
+        album_data = ctx.application.bot_data.get("mb_album_cache", {}).get(album_ck)
+        if not album_data or track_idx >= len(album_data.get("tracks", [])):
+            await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
+            return
+        track = album_data["tracks"][track_idx]
+        status = await q.message.reply_text(f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML")
+        result = await async_find_track(track["name"], track["artists"])
+        if not result:
+            await status.edit_text(f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML")
+            return
+        await status.delete()
+        await do_download(q.message, result["url"], track["name"], track["artists"], uid, ctx)
+        return
+
+    # ZIP MB альбому
+    if data == "mb_albumzip":
+        if not has_access(uid):
+            await q.message.reply_text(tx("no_access", l), parse_mode="HTML"); return
+        album_ck = ctx.application.bot_data.get("last_mb_album_ck", "")
+        album_data = ctx.application.bot_data.get("mb_album_cache", {}).get(album_ck)
+        if not album_data:
+            await q.message.reply_text("❌ Дані альбому застаріли.")
+            return
+        await do_download_mb_album_zip(q.message, album_data, uid, ctx)
+        return
+
+    # Додати MB альбом в бібліотеку
+    if data.startswith("mb_addlib|"):
+        parts = data.split("|", 2)
+        album_ck = parts[1]
+        album_data = ctx.application.bot_data.get("mb_album_cache", {}).get(album_ck)
+        if album_data:
+            first_track = album_data["tracks"][0] if album_data["tracks"] else {}
+            result = await async_find_track(first_track.get("name", ""), album_data["artist"])
+            url = result["url"] if result else album_data["external_url"]
+            added = add_library(uid, album_data["name"], album_data["artist"], url, kind="album")
+            await q.answer("✅ Альбом додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
+        return
 # ============================================================
 #  MusicLSP — Частина 3: Повідомлення, MusicBrainz альбоми, адмін, main
 # ============================================================
