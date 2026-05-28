@@ -2,7 +2,7 @@
 #  MusicLSP — Частина 1: Імпорти, конфіг, Spotify, БД, пошук
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json
 import static_ffmpeg
 import requests
 
@@ -437,57 +437,80 @@ def fmt_dur(s):
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
-def get_yt_opts(extra=None):
+# ─── YouTube клієнти (пріоритет: android → ios → tv → web_embedded → web) ───
+YT_CLIENTS = [
+    {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]},
+    {"player_client": ["ios"], "player_skip": ["webpage", "configs", "js"]},
+    {"player_client": ["tv_embedded"], "player_skip": ["webpage", "configs", "js"]},
+    {"player_client": ["web_embedded"], "player_skip": ["webpage", "configs", "js"]},
+    {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
+]
+
+def get_yt_opts(extra=None, client_idx=0):
+    """Повертає yt-dlp опції з вказаним клієнтом."""
     opts = {
-        "quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True,
+        "quiet": True, 
+        "no_warnings": True, 
+        "extract_flat": True, 
+        "noplaylist": True,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "referer": "https://www.youtube.com/",
-        "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
-        "extractor_args": {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}},
+        "headers": {
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        },
+        "extractor_args": {"youtube": YT_CLIENTS[client_idx]},
     }
-    if extra: opts.update(extra)
+    if extra: 
+        opts.update(extra)
     return opts
 
 def yt_search(query, limit=10):
-    opts = get_yt_opts()
-    opts["extractor_args"] = {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}}
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-    except Exception as e:
-        logger.warning(f"yt_search web failed: {e}")
+    """Пошук на YouTube з автоматичним fallback на різні клієнти."""
+    for i, client in enumerate(YT_CLIENTS):
         try:
-            opts = get_yt_opts()
-            opts["extractor_args"] = {"youtube": {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]}}
+            opts = get_yt_opts(client_idx=i)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-        except Exception as e2:
-            logger.error(f"yt_search fallback also failed: {e2}")
-            return []
-    tracks = []
-    for e in (r.get("entries") or []):
-        if not e: continue
-        dur = e.get("duration", 0)
-        if dur and dur > 900: continue
-        tracks.append({
-            "title": e.get("title", "Unknown"),
-            "url": f"https://www.youtube.com/watch?v={e['id']}",
-            "id": e["id"],
-            "duration": fmt_dur(dur),
-            "channel": e.get("channel") or e.get("uploader") or "—",
-            "source": "youtube",
-        })
-    return tracks
+            
+            tracks = []
+            for e in (r.get("entries") or []):
+                if not e: 
+                    continue
+                dur = e.get("duration", 0)
+                if dur and dur > 900: 
+                    continue
+                tracks.append({
+                    "title": e.get("title", "Unknown"),
+                    "url": f"https://www.youtube.com/watch?v={e['id']}",
+                    "id": e["id"],
+                    "duration": fmt_dur(dur),
+                    "channel": e.get("channel") or e.get("uploader") or "—",
+                    "source": "youtube",
+                })
+            
+            if tracks:
+                logger.info(f"✅ yt_search успішно через {client['player_client'][0]}: {len(tracks)} результатів")
+                return tracks
+                
+        except Exception as e:
+            logger.warning(f"yt_search {client['player_client'][0]} failed: {e}")
+            continue
+    
+    logger.error("yt_search: всі клієнти провалились")
+    return []
 
 def sc_search(query, limit=5):
     opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
             r = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
-        except: return []
+        except: 
+            return []
     tracks = []
     for e in (r.get("entries") or []):
-        if not e: continue
+        if not e: 
+            continue
         tracks.append({
             "title": e.get("title", "Unknown"),
             "url": e.get("webpage_url") or e.get("url", ""),
@@ -607,10 +630,7 @@ def search_spotify_and_format(query, limit=10):
     return results
 
 def find_track_for_download(track_name, artist_name):
-    """
-    Пошук треку для завантаження.
-    Послідовність: YouTube → SoundCloud → Spotify
-    """
+    """Пошук треку для завантаження. Послідовність: YouTube → SoundCloud → YT Music."""
     query = f"{artist_name} {track_name}"
     
     logger.info(f"🔍 Шукаю на YouTube: {query}")
@@ -641,13 +661,15 @@ def get_top100():
             r = ydl.extract_info("https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI", download=False)
         tracks = []
         for i, e in enumerate(r.get("entries") or []):
-            if not e: continue
+            if not e: 
+                continue
             tracks.append({
                 "title": e.get("title", "Unknown"),
                 "url": f"https://www.youtube.com/watch?v={e['id']}",
                 "duration": fmt_dur(e.get("duration", 0)),
                 "channel": e.get("channel") or "—",
-                "rank": i + 1, "source": "youtube",
+                "rank": i + 1, 
+                "source": "youtube",
             })
         return tracks[:100]
     except Exception as ex:
@@ -655,11 +677,7 @@ def get_top100():
         return yt_search("top hits 2024", 50)
 
 # ─── MusicBrainz API ──────────────────────────────────────────────────────────
-
 def mb_search_album(query, limit=10):
-    """
-    Шукає альбоми в MusicBrainz API.
-    """
     import urllib.parse
     encoded = urllib.parse.quote(query)
     url = f"https://musicbrainz.org/ws/2/release/?query=release:{encoded}&fmt=json&limit={limit}"
@@ -676,10 +694,6 @@ def mb_search_album(query, limit=10):
         return []
 
 def mb_get_full_album_info(mbid):
-    """
-    Отримує повну інформацію про альбом з MusicBrainz за MBID.
-    З покращеною обробкою обкладинок.
-    """
     url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artists+labels&fmt=json"
     headers = {"User-Agent": f"MusicLSP/1.0 ({AUTHOR})"}
     try:
@@ -690,7 +704,6 @@ def mb_get_full_album_info(mbid):
         logger.error(f"MusicBrainz release error: {e}")
         return None
     
-    # ← ВИПРАВЛЕНО: Краща обробка обкладинок
     release_group_id = data.get("release-group", {}).get("id", "")
     image_url = ""
     
@@ -698,7 +711,6 @@ def mb_get_full_album_info(mbid):
     if release_group_id:
         try:
             cover_url = f"https://coverartarchive.org/release-group/{release_group_id}"
-            logger.info(f"Trying CAA release-group: {cover_url}")
             cover_resp = requests.get(cover_url, headers=headers, timeout=10)
             if cover_resp.status_code == 200:
                 cover_data = cover_resp.json()
@@ -707,17 +719,13 @@ def mb_get_full_album_info(mbid):
                     image_url = images[0].get("thumbnails", {}).get("large", 
                               images[0].get("thumbnails", {}).get("small",
                               images[0].get("image", "")))
-                    logger.info(f"Found CAA image (release-group): {image_url[:100] if image_url else 'EMPTY'}")
-            else:
-                logger.warning(f"CAA release-group status: {cover_resp.status_code}")
-        except Exception as e:
-            logger.warning(f"CoverArt release-group error: {e}")
+        except:
+            pass
     
-    # Спосіб 2: CoverArtArchive через release (якщо release-group не спрацював)
+    # Спосіб 2: CoverArtArchive через release
     if not image_url:
         try:
             cover_url = f"https://coverartarchive.org/release/{mbid}"
-            logger.info(f"Trying CAA release: {cover_url}")
             cover_resp = requests.get(cover_url, headers=headers, timeout=10)
             if cover_resp.status_code == 200:
                 cover_data = cover_resp.json()
@@ -726,28 +734,23 @@ def mb_get_full_album_info(mbid):
                     image_url = images[0].get("thumbnails", {}).get("large",
                               images[0].get("thumbnails", {}).get("small",
                               images[0].get("image", "")))
-                    logger.info(f"Found CAA image (release): {image_url[:100] if image_url else 'EMPTY'}")
-            else:
-                logger.warning(f"CAA release status: {cover_resp.status_code}")
-        except Exception as e:
-            logger.warning(f"CoverArt release error: {e}")
+        except:
+            pass
     
-    # Спосіб 3: MusicBrainz relationships (якщо є URL обкладинки)
+    # Спосіб 3: MusicBrainz relationships
     if not image_url:
         try:
             rel_url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=url-rels&fmt=json"
             rel_resp = requests.get(rel_url, headers=headers, timeout=10)
             if rel_resp.status_code == 200:
                 rel_data = rel_resp.json()
-                relations = rel_data.get("relations", [])
-                for rel in relations:
+                for rel in rel_data.get("relations", []):
                     if rel.get("type") == "cover art link":
                         image_url = rel.get("url", {}).get("resource", "")
                         if image_url:
-                            logger.info(f"Found MB relation image: {image_url[:100]}")
                             break
-        except Exception as e:
-            logger.warning(f"MB relations error: {e}")
+        except:
+            pass
     
     tracks = []
     total_duration_ms = 0
@@ -773,7 +776,7 @@ def mb_get_full_album_info(mbid):
     release_date = data.get("date", "—")
     year = release_date[:4] if release_date and len(release_date) >= 4 else "—"
     
-    result = {
+    return {
         "mbid": mbid,
         "name": data.get("title", "Unknown Album"),
         "artist": artists,
@@ -789,14 +792,8 @@ def mb_get_full_album_info(mbid):
         "album_type": data.get("release-group", {}).get("primary-type", "album"),
         "external_url": f"https://musicbrainz.org/release/{mbid}",
     }
-    
-    logger.info(f"MB Result image_url: {image_url[:100] if image_url else 'EMPTY'}")
-    return result
 
 def mb_format_album(release):
-    """
-    Форматує дані релізу MusicBrainz для клавіатури.
-    """
     title = release.get("title", "Unknown")
     artists = ", ".join(a.get("name", "") for a in release.get("artist-credit", []))
     date = release.get("date", "—")
@@ -819,57 +816,166 @@ def mb_format_album(release):
 import zipfile
 import io
 
-COOKIES_PATH = "youtube_cookies.txt"  # ← ВИПРАВЛЕНО! Було "cookies.txt"
+COOKIES_PATH = "youtube_cookies.txt"
+COOKIES_JSON_PATH = "youtube_cookies.json"
 
-def get_yt_opts(extra=None):
-    opts = {
-        "quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "referer": "https://www.youtube.com/",
-        "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
-        "extractor_args": {"youtube": {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]}},
-        "cookies": COOKIES_PATH,  # ← тепер "youtube_cookies.txt"
-    }
-    if extra: opts.update(extra)
-    return opts
+# ─── Авто-оновлення cookies (опціонально, якщо потрібен web клієнт) ───────────
+def are_cookies_fresh(path=COOKIES_JSON_PATH, max_age_hours=6):
+    """Перевіряє чи cookies свіжі."""
+    if not os.path.exists(path):
+        return False
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+    return datetime.datetime.now() - mtime < datetime.timedelta(hours=max_age_hours)
 
+def convert_cookies_json_to_netscape(json_path=COOKIES_JSON_PATH, netscape_path=COOKIES_PATH):
+    """Конвертує cookies з JSON в Netscape format."""
+    if not os.path.exists(json_path):
+        return False
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            cookies = json.load(f)
+        
+        lines = ["# Netscape HTTP Cookie File"]
+        for c in cookies:
+            domain = c.get('domain', '.youtube.com')
+            if not domain.startswith('.'):
+                domain = '.' + domain
+            flag = "TRUE"
+            path = c.get('path', '/')
+            secure = "TRUE" if c.get('secure', True) else "FALSE"
+            expiry = str(int(c.get('expires', (datetime.datetime.now() + datetime.timedelta(days=7)).timestamp())))
+            name = c.get('name', '')
+            value = c.get('value', '')
+            if name and value:
+                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
+        
+        with open(netscape_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines))
+        return True
+    except Exception as e:
+        logger.error(f"Cookie convert error: {e}")
+        return False
+
+async def refresh_youtube_cookies_via_playwright():
+    """Оновлює cookies через playwright (для web клієнта)."""
+    try:
+        from playwright.async_api import async_playwright
+        
+        logger.info("🔐 Запускаю браузер для оновлення cookies...")
+        
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            )
+            page = await context.new_page()
+            
+            await page.goto("https://music.youtube.com", wait_until="domcontentloaded")
+            await page.wait_for_timeout(5000)
+            
+            # Приймаємо cookies банер якщо є
+            try:
+                accept_btn = await page.wait_for_selector('button[aria-label="Accept all"]', timeout=3000)
+                if accept_btn:
+                    await accept_btn.click()
+                    await page.wait_for_timeout(2000)
+            except:
+                pass
+            
+            cookies = await context.cookies()
+            
+            with open(COOKIES_JSON_PATH, 'w', encoding='utf-8') as f:
+                json.dump(cookies, f, ensure_ascii=False, indent=2)
+            
+            await browser.close()
+            convert_cookies_json_to_netscape()
+            logger.info(f"✅ Cookies оновлено: {len(cookies)} шт.")
+            return True
+            
+    except ImportError:
+        logger.warning("⚠️ playwright не встановлено. pip install playwright && playwright install chromium")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Помилка playwright: {e}")
+        return False
+
+async def ensure_fresh_cookies():
+    """Гарантує свіжі cookies (тільки якщо використовуємо web клієнт)."""
+    if not are_cookies_fresh(max_age_hours=4):
+        return await refresh_youtube_cookies_via_playwright()
+    return True
+
+# ─── Оновлена функція завантаження (без залежності від cookies) ──────────────
 def download_mp3(url, out_dir, quality="192"):
+    """
+    Завантажує MP3 з YouTube без обов'язкових cookies.
+    Пріоритет: android → ios → tv_embedded → web_embedded → web (з cookies якщо є)
+    """
     base_opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio", 
+            "preferredcodec": "mp3", 
+            "preferredquality": quality
+        }],
+        "quiet": True, 
+        "no_warnings": True, 
+        "noplaylist": True,
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "referer": "https://www.youtube.com/",
-        "headers": {"Accept-Language": "en-US,en;q=0.9", "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"},
-        "cookies": COOKIES_PATH,  # ← тепер "youtube_cookies.txt"
+        "headers": {
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        },
     }
-    clients = [
-        {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
-        {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]},
-        {"player_client": ["ios"], "player_skip": ["webpage", "configs", "js"]},
-        {"player_client": ["tv_embedded"], "player_skip": ["webpage", "configs", "js"]},
-        {"player_client": ["web_embedded"], "player_skip": ["webpage", "configs", "js"]},
-    ]
-    for i, client in enumerate(clients):
+    
+    last_error = None
+    
+    for i, client in enumerate(YT_CLIENTS):
         try:
             opts = dict(base_opts)
             opts["extractor_args"] = {"youtube": client}
+            
+            # Додаємо cookies ТІЛЬКИ для web клієнта і ТІЛЬКИ якщо є файл
+            if client["player_client"] == ["web"] and os.path.exists(COOKIES_PATH):
+                opts["cookies"] = COOKIES_PATH
+                logger.info(f"🔑 Використовую cookies для web клієнта")
+            
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info:
-                    for f in Path(out_dir).glob("*.mp3"):
-                        return str(f)
+                    # Шукаємо MP3
+                    mp3_files = list(Path(out_dir).glob("*.mp3"))
+                    if mp3_files:
+                        return str(mp3_files[0])
+                    # Якщо не MP3 — шукаємо будь-який аудіо файл
+                    for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg"]:
+                        files = list(Path(out_dir).glob(ext))
+                        if files:
+                            return str(files[0])
+                        
         except Exception as e:
+            last_error = e
             err_str = str(e).lower()
-            if "sign in" in err_str or "bot" in err_str:
-                logger.warning(f"Attempt {i+1}: YouTube вимагає авторизації")
+            client_name = client["player_client"][0]
+            
+            if "sign in" in err_str or "login" in err_str:
+                logger.warning(f"Attempt {i+1} ({client_name}): YouTube вимагає авторизацію")
+            elif "bot" in err_str or "automated" in err_str:
+                logger.warning(f"Attempt {i+1} ({client_name}): Bot detection")
+            elif "unavailable" in err_str:
+                logger.warning(f"Attempt {i+1} ({client_name}): Video unavailable")
+            elif "age" in err_str:
+                logger.warning(f"Attempt {i+1} ({client_name}): Age restricted")
             else:
-                logger.warning(f"Download attempt {i+1} failed: {e}")
+                logger.warning(f"Attempt {i+1} ({client_name}) failed: {e}")
             continue
-    logger.error(f"All download attempts failed for {url}")
+    
+    logger.error(f"All download attempts failed for {url}. Last error: {last_error}")
     return None
 
+# ─── Асинхронні обгортки ──────────────────────────────────────────────────────
 async def async_search(query, limit=10):
     return await asyncio.get_event_loop().run_in_executor(None, search_all, query, limit)
 
@@ -880,6 +986,9 @@ async def async_top100():
     return await asyncio.get_event_loop().run_in_executor(None, get_top100)
 
 async def async_download(url, out_dir, quality="192"):
+    # Оновлюємо cookies перед завантаженням (якщо потрібно для web клієнта)
+    if os.path.exists(COOKIES_PATH):
+        await ensure_fresh_cookies()
     return await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
 
 async def async_spotify_album_info(album_id):
@@ -1384,9 +1493,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
     
-    # Логуємо image_url для діагностики
-    logger.info(f"MB Album image_url: {album.get('image_url', 'NOT FOUND')}")
-    
     import hashlib
     ck = hashlib.md5(f"{uid}_{mbid}".encode()).hexdigest()[:8]
     ctx.application.bot_data.setdefault("mb_album_cache", {})[ck] = album
@@ -1428,7 +1534,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
     image_url = album.get("image_url", "")
     if image_url:
         try:
-            logger.info(f"Sending MB photo with URL: {image_url[:100]}")
             await msg.reply_photo(
                 photo=image_url,
                 caption=text[:1024],
@@ -1438,7 +1543,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
             return
         except Exception as e:
             logger.error(f"MB Photo send failed: {e}")
-            # Спробуємо відправити як document (іноді працює краще)
             try:
                 await msg.reply_document(
                     document=image_url,
@@ -1450,7 +1554,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
             except Exception as e2:
                 logger.error(f"MB Document send also failed: {e2}")
     
-    # Якщо немає фото або не відправилось — текст
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
@@ -1498,13 +1601,11 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
     
-    # ZIP з обкладинкою як thumbnail
     thumb = album_data.get("image_url", "")
     if thumb:
         try:
             thumb_resp = requests.get(thumb, timeout=10)
             if thumb_resp.status_code == 200:
-                import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_thumb:
                     tmp_thumb.write(thumb_resp.content)
                     tmp_thumb.flush()
@@ -1733,7 +1834,6 @@ async def do_download(msg, url, title, artist, uid, ctx):
 
 # ─── Spotify: Показати альбом ───────────────────────────────────────────────
 async def show_spotify_album(msg, album_id, uid, ctx):
-    """Показує інформацію про Spotify альбом з обкладинкою."""
     l = get_lang(uid)
     status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
     
@@ -1742,11 +1842,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
         await status.edit_text("❌ Не вдалося отримати дані. Спробуй інший альбом.")
         return
     
-    # Логуємо image_url для діагностики
-    logger.info(f"Spotify Album image_url: {album.get('image_url', 'NOT FOUND')}")
-    logger.info(f"Spotify Album image_urls: {album.get('image_urls', [])}")
-    
-    # Кешуємо альбом
     import hashlib
     ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
     ctx.application.bot_data.setdefault("spotify_album_cache", {})[ck] = album
@@ -1786,14 +1881,12 @@ async def show_spotify_album(msg, album_id, uid, ctx):
     except:
         pass
     
-    # Відправляємо з обкладинкою
     image_url = album.get("image_url", "")
     if not image_url and album.get("image_urls"):
-        image_url = album["image_urls"][0]  # Беремо першу доступну
+        image_url = album["image_urls"][0]
     
     if image_url:
         try:
-            logger.info(f"Sending Spotify photo with URL: {image_url[:100]}")
             await msg.reply_photo(
                 photo=image_url,
                 caption=text[:1024],
@@ -1803,7 +1896,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
             return
         except Exception as e:
             logger.error(f"Spotify Photo send failed: {e}")
-            # Спробуємо відправити як document
             try:
                 await msg.reply_document(
                     document=image_url,
@@ -1815,7 +1907,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
             except Exception as e2:
                 logger.error(f"Spotify Document send also failed: {e2}")
     
-    # Якщо немає фото або не відправилось — текст
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Spotify: Завантажити ZIP ───────────────────────────────────────────────
@@ -1863,7 +1954,6 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
     
-    # ZIP з обкладинкою як thumbnail
     thumb = album_data.get("image_url", "")
     if not thumb and album_data.get("image_urls"):
         thumb = album_data["image_urls"][0]
@@ -1872,7 +1962,6 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
         try:
             thumb_resp = requests.get(thumb, timeout=10)
             if thumb_resp.status_code == 200:
-                import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_thumb:
                     tmp_thumb.write(thumb_resp.content)
                     tmp_thumb.flush()
@@ -1889,7 +1978,6 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
         except Exception as e:
             logger.warning(f"Spotify ZIP thumbnail failed: {e}")
     
-    # Без обкладинки
     await msg.reply_document(
         document=zip_buffer,
         filename=f"{safe_name}.zip",
