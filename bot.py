@@ -1454,7 +1454,7 @@ async def batch_download(msg, artist, uid, ctx):
                 path = await async_download(t["url"], tmp, quality)
                 if path and os.path.exists(path) and os.path.getsize(path) / 1024 / 1024 <= MAX_MB:
                     with open(path, "rb") as f:
-                        await msg.reply_audio(audio=f, title=t["title'][:64], performer=t['channel'][:64], filename=f"{t['title'][:50]}.mp3")
+                        await msg.reply_audio(audio=f, title=t["title"][:64], performer=t["channel"][:64], filename=f"{t['title'][:50]}.mp3")
                     add_history(uid, t["title"], t["channel"])
                     ok += 1
             except Exception as e:
