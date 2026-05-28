@@ -1333,6 +1333,9 @@ async def show_mb_album(msg, mbid, uid, ctx):
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
     
+    # Логуємо image_url для діагностики
+    logger.info(f"MB Album image_url: {album.get('image_url', 'NOT FOUND')}")
+    
     import hashlib
     ck = hashlib.md5(f"{uid}_{mbid}".encode()).hexdigest()[:8]
     ctx.application.bot_data.setdefault("mb_album_cache", {})[ck] = album
@@ -1370,20 +1373,33 @@ async def show_mb_album(msg, mbid, uid, ctx):
     except:
         pass
     
-    # ← ДОДАНО: Відправляємо обкладинку як фото з caption
-    if album.get("image_url"):
+    # Відправляємо з обкладинкою
+    image_url = album.get("image_url", "")
+    if image_url:
         try:
+            logger.info(f"Sending MB photo with URL: {image_url[:100]}")
             await msg.reply_photo(
-                photo=album["image_url"],
+                photo=image_url,
                 caption=text[:1024],
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="HTML"
             )
-            return  # Виходимо, якщо фото відправлено
+            return
         except Exception as e:
-            logger.warning(f"MB Photo send failed: {e}")
+            logger.error(f"MB Photo send failed: {e}")
+            # Спробуємо відправити як document (іноді працює краще)
+            try:
+                await msg.reply_document(
+                    document=image_url,
+                    caption=text[:1024],
+                    reply_markup=InlineKeyboardMarkup(kb),
+                    parse_mode="HTML"
+                )
+                return
+            except Exception as e2:
+                logger.error(f"MB Document send also failed: {e2}")
     
-    # Якщо фото не відправилось — відправляємо текст
+    # Якщо немає фото або не відправилось — текст
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
@@ -1431,11 +1447,10 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
     
-    # ← ДОДАНО: Відправляємо ZIP з обкладинкою як thumbnail (якщо є)
+    # ZIP з обкладинкою як thumbnail
     thumb = album_data.get("image_url", "")
     if thumb:
         try:
-            # Завантажуємо обкладинку для thumbnail
             thumb_resp = requests.get(thumb, timeout=10)
             if thumb_resp.status_code == 200:
                 import tempfile
@@ -1444,7 +1459,7 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
                     tmp_thumb.flush()
                     await msg.reply_document(
                         document=zip_buffer,
-                        thumbnail=tmp_thumb.name,  # Обкладинка для ZIP
+                        thumbnail=tmp_thumb.name,
                         filename=f"{safe_name}.zip",
                         caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
                         parse_mode="HTML"
@@ -1453,9 +1468,8 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
                     await status.delete()
                     return
         except Exception as e:
-            logger.warning(f"ZIP thumbnail failed: {e}")
+            logger.warning(f"MB ZIP thumbnail failed: {e}")
     
-    # Якщо обкладинка не спрацювала — без неї
     await msg.reply_document(
         document=zip_buffer,
         filename=f"{safe_name}.zip",
@@ -1677,6 +1691,10 @@ async def show_spotify_album(msg, album_id, uid, ctx):
         await status.edit_text("❌ Не вдалося отримати дані. Спробуй інший альбом.")
         return
     
+    # Логуємо image_url для діагностики
+    logger.info(f"Spotify Album image_url: {album.get('image_url', 'NOT FOUND')}")
+    logger.info(f"Spotify Album image_urls: {album.get('image_urls', [])}")
+    
     # Кешуємо альбом
     import hashlib
     ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
@@ -1717,20 +1735,36 @@ async def show_spotify_album(msg, album_id, uid, ctx):
     except:
         pass
     
-    # ← ДОДАНО: Відправляємо обкладинку як фото з caption
-    if album.get("image_url"):
+    # Відправляємо з обкладинкою
+    image_url = album.get("image_url", "")
+    if not image_url and album.get("image_urls"):
+        image_url = album["image_urls"][0]  # Беремо першу доступну
+    
+    if image_url:
         try:
+            logger.info(f"Sending Spotify photo with URL: {image_url[:100]}")
             await msg.reply_photo(
-                photo=album["image_url"],
+                photo=image_url,
                 caption=text[:1024],
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="HTML"
             )
-            return  # Виходимо, якщо фото відправлено
+            return
         except Exception as e:
-            logger.warning(f"Spotify Photo send failed: {e}")
+            logger.error(f"Spotify Photo send failed: {e}")
+            # Спробуємо відправити як document
+            try:
+                await msg.reply_document(
+                    document=image_url,
+                    caption=text[:1024],
+                    reply_markup=InlineKeyboardMarkup(kb),
+                    parse_mode="HTML"
+                )
+                return
+            except Exception as e2:
+                logger.error(f"Spotify Document send also failed: {e2}")
     
-    # Якщо фото не відправилось — текст
+    # Якщо немає фото або не відправилось — текст
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Spotify: Завантажити ZIP ───────────────────────────────────────────────
@@ -1778,8 +1812,11 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
     
-    # ← ДОДАНО: Відправляємо ZIP з обкладинкою як thumbnail
+    # ZIP з обкладинкою як thumbnail
     thumb = album_data.get("image_url", "")
+    if not thumb and album_data.get("image_urls"):
+        thumb = album_data["image_urls"][0]
+    
     if thumb:
         try:
             thumb_resp = requests.get(thumb, timeout=10)
