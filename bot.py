@@ -568,6 +568,7 @@ def get_spotify_album_info(album_id):
     
     images = album.get("images", [])
     image_url = images[0].get("url", "") if images else ""
+    image_urls = [img.get("url", "") for img in images]
     
     return {
         "id": album_id,
@@ -582,7 +583,7 @@ def get_spotify_album_info(album_id):
         "popularity": popularity,
         "label": album.get("label", "—"),
         "image_url": image_url,
-        "image_urls": [img.get("url", "") for img in images],
+        "image_urls": image_urls,
         "album_type": album.get("album_type", "album"),
         "external_url": album.get("external_urls", {}).get("spotify", f"https://open.spotify.com/album/{album_id}"),
     }
@@ -677,6 +678,7 @@ def mb_search_album(query, limit=10):
 def mb_get_full_album_info(mbid):
     """
     Отримує повну інформацію про альбом з MusicBrainz за MBID.
+    З покращеною обробкою обкладинок.
     """
     url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artists+labels&fmt=json"
     headers = {"User-Agent": f"MusicLSP/1.0 ({AUTHOR})"}
@@ -688,19 +690,64 @@ def mb_get_full_album_info(mbid):
         logger.error(f"MusicBrainz release error: {e}")
         return None
     
+    # ← ВИПРАВЛЕНО: Краща обробка обкладинок
     release_group_id = data.get("release-group", {}).get("id", "")
     image_url = ""
+    
+    # Спосіб 1: CoverArtArchive через release-group
     if release_group_id:
         try:
             cover_url = f"https://coverartarchive.org/release-group/{release_group_id}"
+            logger.info(f"Trying CAA release-group: {cover_url}")
             cover_resp = requests.get(cover_url, headers=headers, timeout=10)
             if cover_resp.status_code == 200:
                 cover_data = cover_resp.json()
                 images = cover_data.get("images", [])
                 if images:
-                    image_url = images[0].get("thumbnails", {}).get("large", images[0].get("image", ""))
+                    image_url = images[0].get("thumbnails", {}).get("large", 
+                              images[0].get("thumbnails", {}).get("small",
+                              images[0].get("image", "")))
+                    logger.info(f"Found CAA image (release-group): {image_url[:100] if image_url else 'EMPTY'}")
+            else:
+                logger.warning(f"CAA release-group status: {cover_resp.status_code}")
         except Exception as e:
-            logger.warning(f"CoverArt error: {e}")
+            logger.warning(f"CoverArt release-group error: {e}")
+    
+    # Спосіб 2: CoverArtArchive через release (якщо release-group не спрацював)
+    if not image_url:
+        try:
+            cover_url = f"https://coverartarchive.org/release/{mbid}"
+            logger.info(f"Trying CAA release: {cover_url}")
+            cover_resp = requests.get(cover_url, headers=headers, timeout=10)
+            if cover_resp.status_code == 200:
+                cover_data = cover_resp.json()
+                images = cover_data.get("images", [])
+                if images:
+                    image_url = images[0].get("thumbnails", {}).get("large",
+                              images[0].get("thumbnails", {}).get("small",
+                              images[0].get("image", "")))
+                    logger.info(f"Found CAA image (release): {image_url[:100] if image_url else 'EMPTY'}")
+            else:
+                logger.warning(f"CAA release status: {cover_resp.status_code}")
+        except Exception as e:
+            logger.warning(f"CoverArt release error: {e}")
+    
+    # Спосіб 3: MusicBrainz relationships (якщо є URL обкладинки)
+    if not image_url:
+        try:
+            rel_url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=url-rels&fmt=json"
+            rel_resp = requests.get(rel_url, headers=headers, timeout=10)
+            if rel_resp.status_code == 200:
+                rel_data = rel_resp.json()
+                relations = rel_data.get("relations", [])
+                for rel in relations:
+                    if rel.get("type") == "cover art link":
+                        image_url = rel.get("url", {}).get("resource", "")
+                        if image_url:
+                            logger.info(f"Found MB relation image: {image_url[:100]}")
+                            break
+        except Exception as e:
+            logger.warning(f"MB relations error: {e}")
     
     tracks = []
     total_duration_ms = 0
@@ -726,7 +773,7 @@ def mb_get_full_album_info(mbid):
     release_date = data.get("date", "—")
     year = release_date[:4] if release_date and len(release_date) >= 4 else "—"
     
-    return {
+    result = {
         "mbid": mbid,
         "name": data.get("title", "Unknown Album"),
         "artist": artists,
@@ -738,9 +785,13 @@ def mb_get_full_album_info(mbid):
         "total_duration": fmt_dur_ms(total_duration_ms),
         "label": label,
         "image_url": image_url,
+        "image_urls": [image_url] if image_url else [],
         "album_type": data.get("release-group", {}).get("primary-type", "album"),
         "external_url": f"https://musicbrainz.org/release/{mbid}",
     }
+    
+    logger.info(f"MB Result image_url: {image_url[:100] if image_url else 'EMPTY'}")
+    return result
 
 def mb_format_album(release):
     """
