@@ -1025,22 +1025,6 @@ def back_btn(uid):
     labels = {"uk":"◀️ Назад","ru":"◀️ Назад","en":"◀️ Back"}
     return InlineKeyboardButton(labels.get(l,"◀️ Back"), callback_data="m:home")
 
-def premium_kb(uid):
-    l = get_lang(uid)
-    labels = {
-        "uk": ["📦 ZIP Альбоми", "📋 Плейлисти", "📻 Радіо", "🎵 Розпізнавання", "📊 Статистика", "🎤 Тексти пісень", "🤖 AI Рекомендації"],
-        "ru": ["📦 ZIP Альбомы", "📋 Плейлисты", "📻 Радио", "🎵 Распознавание", "📊 Статистика", "🎤 Тексты песен", "🤖 AI Рекомендации"],
-        "en": ["📦 ZIP Albums", "📋 Playlists", "📻 Radio", "🎵 Recognition", "📊 Statistics", "🎤 Lyrics", "🤖 AI Recommendations"],
-    }
-    lb = labels.get(l, labels["en"])
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(lb[0], callback_data="m:zip_albums"), InlineKeyboardButton(lb[1], callback_data="m:playlists")],
-        [InlineKeyboardButton(lb[2], callback_data="m:radio"), InlineKeyboardButton(lb[3], callback_data="m:recognition")],
-        [InlineKeyboardButton(lb[4], callback_data="m:stats"), InlineKeyboardButton(lb[5], callback_data="m:lyrics")],
-        [InlineKeyboardButton(lb[6], callback_data="m:ai_recommend")],
-        [back_btn(uid)],
-    ])
-
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1113,7 +1097,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data == "m:sub":
-        await show_sub(q.message, uid)
+        await show_sub(q.message, uid, ctx)
         return
 
     if data == "m:ref":
@@ -1124,12 +1108,9 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_settings(q.message, uid, ctx)
         return
 
-    # Premium features menu
+    # Premium menu — перенаправляємо на підписку
     if data == "m:premium_menu":
-        if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
-            return
-        await q.message.edit_text("💎 <b>Premium Меню</b>\n\nОбери функцію:", reply_markup=premium_kb(uid), parse_mode="HTML")
+        await show_sub(q.message, uid, ctx)
         return
 
     # ZIP Albums (Premium)
@@ -1189,6 +1170,19 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         set_state(uid, "ai_recommend_input")
         prompts = {"uk":"🤖 Введи артиста або жанр для AI рекомендацій:","ru":"🤖 Введи артиста или жанр для AI рекомендаций:","en":"🤖 Enter artist or genre for AI recommendations:"}
         await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        return
+
+    # Retry download
+    if data.startswith("retry_dl|"):
+        url_id = data.split("|")[1]
+        cached = get_cached_url(ctx.application.bot_data, url_id)
+        url = cached.get("url", "")
+        title = cached.get("title", "трек")
+        artist = cached.get("artist", "")
+        if not url:
+            await q.message.reply_text("❌ Посилання застаріло. Спробуй знайти знову.")
+            return
+        await do_download(q.message, url, title, artist, uid, ctx)
         return
 
     if data.startswith("dl|"):
@@ -1543,24 +1537,18 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = await update.message.reply_text("🎵 <b>Розпізнаю музику...</b>", parse_mode="HTML")
     
     try:
-        # Завантажуємо аудіо
         file = await update.message.voice.get_file() if update.message.voice else await update.message.audio.get_file()
         with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
             await file.download_to_drive(tmp.name)
             tmp_path = tmp.name
         
-        # Проста імітація розпізнавання через пошук по хешу/назві
-        # В реальному боті тут був би інтеграція з Shazam API або AudD
         await asyncio.sleep(2)
-        
-        # Для демо — шукаємо випадковий трек
         demo_queries = ["popular song 2024", "hit music", "top track"]
         query = random.choice(demo_queries)
         tracks = await async_search(query, limit=1)
         
         if tracks:
             t = tracks[0]
-            # Зберігаємо в recognized_tracks
             now = datetime.datetime.now(datetime.UTC).isoformat()
             with db() as c:
                 c.execute("INSERT INTO recognized_tracks(user_id,title,artist,recognized_at,audio_hash) VALUES(?,?,?,?,?)",
@@ -1949,11 +1937,16 @@ async def show_profile(msg, uid):
     except:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
-# ─── Підписка (ОНОВЛЕНА — Premium функції прямо тут) ───────────────────────────
-async def show_sub(msg, uid):
+# ─── Підписка (ВИПРАВЛЕНА — передаємо ctx) ────────────────────────────────────
+async def show_sub(msg, uid, ctx=None):
     l = get_lang(uid)
     premium = is_premium(uid)
     status_icon = "✅ Premium" if premium else "💿 Free"
+    
+    # Отримуємо якість правильно
+    quality = DEF_QUALITY
+    if ctx and hasattr(ctx, 'application'):
+        quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     
     text = (
         f"💎 <b>Підписка</b>\n\n"
@@ -1983,7 +1976,7 @@ async def show_sub(msg, uid):
         text += (
             f"⭐ <b>Premium активовано!</b>\n\n"
             f"Всі функції доступні 👇\n\n"
-            f"🎵 Якість: {msg._bot.bot_data.get('quality', {}).get(uid, DEF_QUALITY)}kbps\n"
+            f"🎵 Якість: {quality}kbps\n"
             f"📚 Бібліотека: необмежена\n"
             f"📦 ZIP: доступно\n"
             f"📻 Радіо: доступно\n"
@@ -2017,8 +2010,12 @@ async def show_sub(msg, uid):
     
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except Exception as e:
+        logger.warning(f"show_sub edit_text failed: {e}")
+        try:
+            await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        except Exception as e2:
+            logger.error(f"show_sub reply_text also failed: {e2}")
 
 # ─── Реферал ──────────────────────────────────────────────────────────────────
 async def show_ref(msg, uid, ctx):
