@@ -1227,7 +1227,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 # ============================================================
 #  MusicLSP — Частина 3: Повідомлення, MusicBrainz альбоми, адмін, main
+#  (ОНОВЛЕНА з плейлистами та лайками)
 # ============================================================
+
+# ─── Імпорт плейлистів ─────────────────────────────────────────────────────────
+from playlists import register_playlist_handlers, handle_playlist_input
 
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -1261,6 +1265,12 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Невірний або вичерпаний промокод.")
         return
+
+    # ← ДОДАНО: Плейлисти та лайки
+    if state.startswith("pl:"):
+        handled = await handle_playlist_input(update, ctx, state, text)
+        if handled:
+            return
 
     # Пошук альбому — MusicBrainz
     if state == "album_search":
@@ -1384,7 +1394,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
     
-    # Логуємо image_url для діагностики
     logger.info(f"MB Album image_url: {album.get('image_url', 'NOT FOUND')}")
     
     import hashlib
@@ -1424,7 +1433,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
     except:
         pass
     
-    # Відправляємо з обкладинкою
     image_url = album.get("image_url", "")
     if image_url:
         try:
@@ -1438,7 +1446,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
             return
         except Exception as e:
             logger.error(f"MB Photo send failed: {e}")
-            # Спробуємо відправити як document (іноді працює краще)
             try:
                 await msg.reply_document(
                     document=image_url,
@@ -1450,7 +1457,6 @@ async def show_mb_album(msg, mbid, uid, ctx):
             except Exception as e2:
                 logger.error(f"MB Document send also failed: {e2}")
     
-    # Якщо немає фото або не відправилось — текст
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
@@ -1498,7 +1504,6 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
     
-    # ZIP з обкладинкою як thumbnail
     thumb = album_data.get("image_url", "")
     if thumb:
         try:
@@ -1703,8 +1708,15 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 return
             await status.edit_text("📤 Відправляю…")
             url_id = cache_url(ctx.application.bot_data, url, title, artist)
+            
+            # ← ДОДАНО: Кнопки бібліотека + лайк
             add_labels = {"uk":"📚 До бібліотеки","ru":"📚 В библиотеку","en":"📚 Add to Library"}
-            kb = [[InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addlib|{url_id}")]]
+            like_labels = {"uk":"❤️ В улюблені","ru":"❤️ В избранное","en":"❤️ Like"}
+            kb = [
+                [InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addlib|{url_id}")],
+                [InlineKeyboardButton(like_labels.get(l, like_labels["en"]), callback_data=f"like:add|{url_id}")]
+            ]
+            
             with open(path, "rb") as f:
                 await msg.reply_audio(
                     audio=f, title=title[:64], performer=artist[:64] or None,
@@ -1742,11 +1754,9 @@ async def show_spotify_album(msg, album_id, uid, ctx):
         await status.edit_text("❌ Не вдалося отримати дані. Спробуй інший альбом.")
         return
     
-    # Логуємо image_url для діагностики
     logger.info(f"Spotify Album image_url: {album.get('image_url', 'NOT FOUND')}")
     logger.info(f"Spotify Album image_urls: {album.get('image_urls', [])}")
     
-    # Кешуємо альбом
     import hashlib
     ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
     ctx.application.bot_data.setdefault("spotify_album_cache", {})[ck] = album
@@ -1786,10 +1796,9 @@ async def show_spotify_album(msg, album_id, uid, ctx):
     except:
         pass
     
-    # Відправляємо з обкладинкою
     image_url = album.get("image_url", "")
     if not image_url and album.get("image_urls"):
-        image_url = album["image_urls"][0]  # Беремо першу доступну
+        image_url = album["image_urls"][0]
     
     if image_url:
         try:
@@ -1803,7 +1812,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
             return
         except Exception as e:
             logger.error(f"Spotify Photo send failed: {e}")
-            # Спробуємо відправити як document
             try:
                 await msg.reply_document(
                     document=image_url,
@@ -1815,7 +1823,6 @@ async def show_spotify_album(msg, album_id, uid, ctx):
             except Exception as e2:
                 logger.error(f"Spotify Document send also failed: {e2}")
     
-    # Якщо немає фото або не відправилось — текст
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Spotify: Завантажити ZIP ───────────────────────────────────────────────
@@ -1863,7 +1870,6 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
     
-    # ZIP з обкладинкою як thumbnail
     thumb = album_data.get("image_url", "")
     if not thumb and album_data.get("image_urls"):
         thumb = album_data["image_urls"][0]
@@ -1889,7 +1895,6 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
         except Exception as e:
             logger.warning(f"Spotify ZIP thumbnail failed: {e}")
     
-    # Без обкладинки
     await msg.reply_document(
         document=zip_buffer,
         filename=f"{safe_name}.zip",
@@ -2029,6 +2034,10 @@ def main():
     app.add_handler(CallbackQueryHandler(on_admin_cb, pattern="^adm:"))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    
+    # ← ДОДАНО: Реєстрація хендлерів плейлистів
+    register_playlist_handlers(app)
+    
     logger.info("✅ MusicLSP запущено!")
     app.run_polling(drop_pending_updates=True)
 
