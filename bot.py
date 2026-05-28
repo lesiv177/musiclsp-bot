@@ -1311,14 +1311,11 @@ async def do_mb_album_search(update, query, uid, ctx):
 
 # ─── MusicBrainz: Показати альбом ─────────────────────────────────────────────
 async def show_mb_album(msg, mbid, uid, ctx):
-    status = await msg.reply_text("💿 Завантажую інформацію…") if hasattr(msg, 'reply_text') else await msg.edit_text("💿 Завантажую інформацію…")
+    status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
     album = await async_mb_full_info(mbid)
     if not album:
         text = "❌ Не вдалося отримати дані. Спробуй інший альбом."
-        try:
-            await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
-        except:
-            await status.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
     ck = f"mb_alb_{uid}_{mbid}"
     ctx.application.bot_data.setdefault("mb_album_cache", {})[ck] = album
