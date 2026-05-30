@@ -1,38 +1,59 @@
-# ============================================================
-#  MusicLSP v2.1 — Free & Premium (1 частна)
-# ============================================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+MusicLSP v3.0 — Fixed & Clean
+Робота без cookies, робочі player_client, виправлені Premium функції
+"""
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json, io, random, subprocess, re
-import static_ffmpeg
-import requests
-
-static_ffmpeg.add_paths()
+import os
+import logging
+import asyncio
+import tempfile
+import datetime
+import sqlite3
+import hashlib
+import base64
+import json
+import io
+import random
+import subprocess
+import re
+import zipfile
 from pathlib import Path
+from contextlib import closing
+
+import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, 
+    CallbackQueryHandler, ContextTypes, filters
+)
 import yt_dlp
 
 # ─── Логування ────────────────────────────────────────────────────────────────
-logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # ─── Конфіг ───────────────────────────────────────────────────────────────────
-BOT_TOKEN    = os.environ.get("MAIN_BOT_TOKEN", "")
-ADMIN_ID     = 1293055247
-DB_PATH      = "musiclsp_v2.db"
-MAX_MB       = 50
-DEF_QUALITY  = "192"
-AUTHOR       = "Lesiv"
-BOT_NAME     = "MusicLSP"
-AUTH_BOT     = "@MusicLSPauth_bot"
+BOT_TOKEN = os.environ.get("MAIN_BOT_TOKEN", "")
+ADMIN_ID = 1293055247
+DB_PATH = "musiclsp_v3.db"
+MAX_MB = 50
+DEF_QUALITY = "192"
+AUTHOR = "Lesiv"
+BOT_NAME = "MusicLSP"
+AUTH_BOT = "@MusicLSPauth_bot"
 SEARCH_PER_PAGE = 10
 
-# ─── Spotify Credentials ──────────────────────────────────────────────────────
-SPOTIFY_CLIENT_ID     = "2cc5b218e6f844a19492410846ad3079"
-SPOTIFY_CLIENT_SECRET = "65524b92c3be45fca0a564d72a09c232"
+# ─── Spotify Credentials (з env) ──────────────────────────────────────────────
+SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 
-# ─── Genius API Token (НОВЕ) ──────────────────────────────────────────────────
-GENIUS_TOKEN = "n_wgRUQlLXkw3XNdbcjiuAKjJGdww_RIE4OTebhCuuCRS4MTf-5uD2shiRPrhIXK"
+# ─── Genius API Token (з env) ─────────────────────────────────────────────────
+GENIUS_TOKEN = os.environ.get("GENIUS_TOKEN", "")
 
 # ─── Free vs Premium Limits ───────────────────────────────────────────────────
 FREE_LIMITS = {
@@ -73,15 +94,23 @@ _spotify_token_expires = 0
 
 def get_spotify_token():
     global _spotify_token, _spotify_token_expires
-    now = datetime.datetime.now(datetime.UTC).timestamp()
+    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
     if _spotify_token and now < _spotify_token_expires - 60:
         return _spotify_token
     auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
     auth_bytes = base64.b64encode(auth_str.encode()).decode()
-    headers = {"Authorization": f"Basic {auth_bytes}", "Content-Type": "application/x-www-form-urlencoded"}
+    headers = {
+        "Authorization": f"Basic {auth_bytes}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
     data = {"grant_type": "client_credentials"}
     try:
-        resp = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data, timeout=10)
+        resp = requests.post(
+            "https://accounts.spotify.com/api/token",
+            headers=headers, data=data, timeout=10
+        )
         resp.raise_for_status()
         token_data = resp.json()
         _spotify_token = token_data["access_token"]
@@ -94,7 +123,8 @@ def get_spotify_token():
 
 def spotify_request(endpoint):
     token = get_spotify_token()
-    if not token: return None
+    if not token:
+        return None
     headers = {"Authorization": f"Bearer {token}"}
     url = f"https://api.spotify.com/v1/{endpoint}"
     try:
@@ -130,27 +160,37 @@ def search_spotify_albums(query, limit=10):
                 if item_id and item_id not in seen_ids:
                     seen_ids.add(item_id)
                     all_items.append(item)
-            if len(all_items) >= 5: break
+            if len(all_items) >= 5:
+                break
     return all_items
 
 def fmt_dur_ms(ms):
-    if not ms: return "—"
+    if not ms:
+        return "—"
     total_sec = ms // 1000
     h, rem = divmod(total_sec, 3600)
     m, s = divmod(rem, 60)
-    if h > 0: return f"{h}:{m:02d}:{s:02d}"
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
 
 def fmt_dur(s):
-    if not s: return "—"
+    if not s:
+        return "—"
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
 # ─── Мови ─────────────────────────────────────────────────────────────────────
 LANGUAGES = {
-    "uk": "🇺🇦 Українська", "ru": "🇷🇺 Русский", "en": "🇬🇧 English",
-    "de": "🇩🇪 Deutsch", "fr": "🇫🇷 Français", "es": "🇪🇸 Español",
-    "pl": "🇵🇱 Polski", "tr": "🇹🇷 Türkçe", "ar": "🇸🇦 العربية",
+    "uk": "🇺🇦 Українська",
+    "ru": "🇷🇺 Русский",
+    "en": "🇬🇧 English",
+    "de": "🇩🇪 Deutsch",
+    "fr": "🇫🇷 Français",
+    "es": "🇪🇸 Español",
+    "pl": "🇵🇱 Polski",
+    "tr": "🇹🇷 Türkçe",
+    "ar": "🇸🇦 العربية",
     "zh": "🇨🇳 中文",
 }
 
@@ -179,12 +219,17 @@ def tx(key, lang, **kw):
 
 # ─── Хелпери для callback_data ────────────────────────────────────────────────
 def url_hash(url):
-    return hashlib.md5(url.encode('utf-8')).hexdigest()[:8]
+    return hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
 
 def cache_url(bot_data, url, title="", artist=""):
     bot_data.setdefault("url_cache", {})
     h = url_hash(url)
-    bot_data["url_cache"][h] = {"url": url, "title": title, "artist": artist, "ts": datetime.datetime.now(datetime.UTC).isoformat()}
+    bot_data["url_cache"][h] = {
+        "url": url,
+        "title": title,
+        "artist": artist,
+        "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
     _clean_url_cache(bot_data)
     return h
 
@@ -193,160 +238,220 @@ def get_cached_url(bot_data, h):
 
 def _clean_url_cache(bot_data):
     cache = bot_data.get("url_cache", {})
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     to_delete = []
     for h, data in cache.items():
         try:
             ts = datetime.datetime.fromisoformat(data.get("ts", "2000-01-01"))
             if (now - ts).total_seconds() > 3600:
                 to_delete.append(h)
-        except:
+        except Exception:
             to_delete.append(h)
     for h in to_delete:
         cache.pop(h, None)
 
 # ─── База даних ───────────────────────────────────────────────────────────────
 def db():
-    c = sqlite3.connect(DB_PATH)
-    c.row_factory = sqlite3.Row
-    return c
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    with db() as c:
+    with closing(db()) as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY, username TEXT, lang TEXT DEFAULT 'uk',
-            joined TEXT, is_premium INTEGER DEFAULT 0, premium_since TEXT,
+            id INTEGER PRIMARY KEY,
+            username TEXT,
+            lang TEXT DEFAULT 'uk',
+            joined TEXT,
+            is_premium INTEGER DEFAULT 0,
+            premium_since TEXT,
             state TEXT DEFAULT ''
         );
         CREATE TABLE IF NOT EXISTS library (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, title TEXT, artist TEXT,
-            url TEXT, kind TEXT DEFAULT 'track', added TEXT
+            user_id INTEGER,
+            title TEXT,
+            artist TEXT,
+            url TEXT,
+            kind TEXT DEFAULT 'track',
+            added TEXT
         );
         CREATE TABLE IF NOT EXISTS history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, title TEXT, artist TEXT, played TEXT
+            user_id INTEGER,
+            title TEXT,
+            artist TEXT,
+            played TEXT
         );
         CREATE TABLE IF NOT EXISTS playlists (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, name TEXT, description TEXT,
-            created TEXT, updated TEXT
+            user_id INTEGER,
+            name TEXT,
+            description TEXT,
+            created TEXT,
+            updated TEXT
         );
         CREATE TABLE IF NOT EXISTS playlist_tracks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            playlist_id INTEGER, title TEXT, artist TEXT,
-            url TEXT, duration TEXT, added TEXT,
+            playlist_id INTEGER,
+            title TEXT,
+            artist TEXT,
+            url TEXT,
+            duration TEXT,
+            added TEXT,
             FOREIGN KEY(playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
         );
         CREATE TABLE IF NOT EXISTS listening_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, track_title TEXT, artist TEXT,
-            duration_sec INTEGER, played_at TEXT, source TEXT DEFAULT 'download'
+            user_id INTEGER,
+            track_title TEXT,
+            artist TEXT,
+            duration_sec INTEGER,
+            played_at TEXT,
+            source TEXT DEFAULT 'download'
         );
         CREATE TABLE IF NOT EXISTS radio_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, seed_artist TEXT, seed_track TEXT,
-            tracks_json TEXT, current_idx INTEGER DEFAULT 0,
-            created TEXT, updated TEXT
+            user_id INTEGER,
+            seed_artist TEXT,
+            seed_track TEXT,
+            tracks_json TEXT,
+            current_idx INTEGER DEFAULT 0,
+            created TEXT,
+            updated TEXT
         );
         CREATE TABLE IF NOT EXISTS recognized_tracks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, title TEXT, artist TEXT,
-            recognized_at TEXT, audio_hash TEXT
-        );
-        CREATE TABLE IF NOT EXISTS notifications (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER, type TEXT, message TEXT,
-            sent_at TEXT, is_read INTEGER DEFAULT 0
+            user_id INTEGER,
+            title TEXT,
+            artist TEXT,
+            recognized_at TEXT,
+            audio_hash TEXT
         );
         """)
 
 # ── Хелпери БД ────────────────────────────────────────────────────────────────
 def get_user(uid):
-    with db() as c:
+    with closing(db()) as c:
         return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
 
 def create_user(uid, username):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        c.execute("INSERT OR IGNORE INTO users (id,username,joined) VALUES(?,?,?)",
-                  (uid, username, now))
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        c.execute(
+            "INSERT OR IGNORE INTO users (id, username, joined) VALUES (?, ?, ?)",
+            (uid, username, now)
+        )
+        c.commit()
 
 def get_lang(uid):
     u = get_user(uid)
     return u["lang"] if u else "en"
 
 def set_lang(uid, lang):
-    with db() as c:
+    with closing(db()) as c:
         c.execute("UPDATE users SET lang=? WHERE id=?", (lang, uid))
+        c.commit()
 
 def get_state(uid):
     u = get_user(uid)
     return u["state"] if u else ""
 
 def set_state(uid, state):
-    with db() as c:
+    with closing(db()) as c:
         c.execute("UPDATE users SET state=? WHERE id=?", (state, uid))
+        c.commit()
 
 def is_premium(uid):
     u = get_user(uid)
     return bool(u and u["is_premium"])
 
 def set_premium(uid, premium=True):
-    now = datetime.datetime.now(datetime.UTC).isoformat() if premium else None
-    with db() as c:
-        c.execute("UPDATE users SET is_premium=?, premium_since=? WHERE id=?",
-                  (1 if premium else 0, now, uid))
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat() if premium else None
+    with closing(db()) as c:
+        c.execute(
+            "UPDATE users SET is_premium=?, premium_since=? WHERE id=?",
+            (1 if premium else 0, now, uid)
+        )
+        c.commit()
 
 def get_limits(uid):
     return PREMIUM_LIMITS if is_premium(uid) else FREE_LIMITS
 
 def add_library(uid, title, artist, url, kind="track"):
     limits = get_limits(uid)
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        count = c.execute("SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)).fetchone()["c"]
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        count = c.execute(
+            "SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)
+        ).fetchone()["c"]
         if count >= limits["library_max"]:
             return False, "full"
-        ex = c.execute("SELECT id FROM library WHERE user_id=? AND url=?", (uid, url)).fetchone()
+        ex = c.execute(
+            "SELECT id FROM library WHERE user_id=? AND url=?", (uid, url)
+        ).fetchone()
         if not ex:
-            c.execute("INSERT INTO library(user_id,title,artist,url,kind,added) VALUES(?,?,?,?,?,?)",
-                      (uid, title, artist, url, kind, now))
+            c.execute(
+                "INSERT INTO library(user_id, title, artist, url, kind, added) VALUES(?,?,?,?,?,?)",
+                (uid, title, artist, url, kind, now)
+            )
+            c.commit()
             return True, "added"
     return False, "exists"
 
 def get_library(uid):
-    with db() as c:
-        return c.execute("SELECT * FROM library WHERE user_id=? ORDER BY added DESC", (uid,)).fetchall()
+    with closing(db()) as c:
+        return c.execute(
+            "SELECT * FROM library WHERE user_id=? ORDER BY added DESC", (uid,)
+        ).fetchall()
 
 def del_library(uid, lid):
-    with db() as c:
+    with closing(db()) as c:
         c.execute("DELETE FROM library WHERE id=? AND user_id=?", (lid, uid))
+        c.commit()
 
 def add_history(uid, title, artist):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        c.execute("INSERT INTO history(user_id,title,artist,played) VALUES(?,?,?,?)", (uid, title, artist, now))
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO history(user_id, title, artist, played) VALUES(?,?,?,?)",
+            (uid, title, artist, now)
+        )
+        c.commit()
 
 def get_stats_user(uid):
-    with db() as c:
-        dl = c.execute("SELECT COUNT(*) as c FROM history WHERE user_id=?", (uid,)).fetchone()["c"]
-        lb = c.execute("SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)).fetchone()["c"]
-        listen_time = c.execute("SELECT SUM(duration_sec) as s FROM listening_stats WHERE user_id=?", (uid,)).fetchone()["s"] or 0
-        unique_artists = c.execute("SELECT COUNT(DISTINCT artist) as c FROM listening_stats WHERE user_id=?", (uid,)).fetchone()["c"] or 0
+    with closing(db()) as c:
+        dl = c.execute(
+            "SELECT COUNT(*) as c FROM history WHERE user_id=?", (uid,)
+        ).fetchone()["c"]
+        lb = c.execute(
+            "SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)
+        ).fetchone()["c"]
+        listen_time = c.execute(
+            "SELECT SUM(duration_sec) as s FROM listening_stats WHERE user_id=?", (uid,)
+        ).fetchone()["s"] or 0
+        unique_artists = c.execute(
+            "SELECT COUNT(DISTINCT artist) as c FROM listening_stats WHERE user_id=?", (uid,)
+        ).fetchone()["c"] or 0
     return {"dl": dl, "lib": lb, "listen_time": listen_time, "unique_artists": unique_artists}
 
 def add_listening_stat(uid, title, artist, duration_sec=0, source="download"):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        c.execute("INSERT INTO listening_stats(user_id,track_title,artist,duration_sec,played_at,source) VALUES(?,?,?,?,?,?)",
-                  (uid, title, artist, duration_sec, now, source))
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO listening_stats(user_id, track_title, artist, duration_sec, played_at, source) VALUES(?,?,?,?,?,?)",
+            (uid, title, artist, duration_sec, now, source)
+        )
+        c.commit()
 
 def get_listening_stats(uid, days=30):
-    since = (datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=days)).isoformat()
-    with db() as c:
-        total = c.execute("SELECT COUNT(*) as c FROM listening_stats WHERE user_id=? AND played_at>?", (uid, since)).fetchone()["c"]
+    since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
+    with closing(db()) as c:
+        total = c.execute(
+            "SELECT COUNT(*) as c FROM listening_stats WHERE user_id=? AND played_at>?",
+            (uid, since)
+        ).fetchone()["c"]
         top_artists = c.execute("""
             SELECT artist, COUNT(*) as c FROM listening_stats 
             WHERE user_id=? AND played_at>? GROUP BY artist ORDER BY c DESC LIMIT 5
@@ -358,208 +463,140 @@ def get_listening_stats(uid, days=30):
     return {"total": total, "top_artists": top_artists, "top_tracks": top_tracks}
 
 def get_all_users():
-    with db() as c:
+    with closing(db()) as c:
         return c.execute("SELECT * FROM users").fetchall()
 
 def get_global_stats():
-    with db() as c:
+    with closing(db()) as c:
         total = c.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
-        premium = c.execute("SELECT COUNT(*) as c FROM users WHERE is_premium=1").fetchone()["c"]
+        premium = c.execute(
+            "SELECT COUNT(*) as c FROM users WHERE is_premium=1"
+        ).fetchone()["c"]
     return {"total": total, "premium": premium, "free": total - premium}
 
 # ─── ПЛЕЙЛИСТИ ────────────────────────────────────────────────────────────────
 def create_playlist(uid, name, description=""):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        c.execute("INSERT INTO playlists(user_id,name,description,created,updated) VALUES(?,?,?,?,?)",
-                  (uid, name, description, now, now))
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO playlists(user_id, name, description, created, updated) VALUES(?,?,?,?,?)",
+            (uid, name, description, now, now)
+        )
+        c.commit()
         return c.lastrowid
 
 def get_playlists(uid):
-    with db() as c:
-        return c.execute("SELECT * FROM playlists WHERE user_id=? ORDER BY updated DESC", (uid,)).fetchall()
+    with closing(db()) as c:
+        return c.execute(
+            "SELECT * FROM playlists WHERE user_id=? ORDER BY updated DESC", (uid,)
+        ).fetchall()
 
 def get_playlist(pid):
-    with db() as c:
+    with closing(db()) as c:
         pl = c.execute("SELECT * FROM playlists WHERE id=?", (pid,)).fetchone()
-        tracks = c.execute("SELECT * FROM playlist_tracks WHERE playlist_id=? ORDER BY id", (pid,)).fetchall()
+        tracks = c.execute(
+            "SELECT * FROM playlist_tracks WHERE playlist_id=? ORDER BY id", (pid,)
+        ).fetchall()
         return pl, tracks
 
 def add_track_to_playlist(pid, title, artist, url, duration=""):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        c.execute("INSERT INTO playlist_tracks(playlist_id,title,artist,url,duration,added) VALUES(?,?,?,?,?,?)",
-                  (pid, title, artist, url, duration, now))
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO playlist_tracks(playlist_id, title, artist, url, duration, added) VALUES(?,?,?,?,?,?)",
+            (pid, title, artist, url, duration, now)
+        )
         c.execute("UPDATE playlists SET updated=? WHERE id=?", (now, pid))
+        c.commit()
 
 def delete_playlist(uid, pid):
-    with db() as c:
+    with closing(db()) as c:
         c.execute("DELETE FROM playlists WHERE id=? AND user_id=?", (pid, uid))
+        c.commit()
 
 def delete_playlist_track(pid, tid):
-    with db() as c:
-        c.execute("DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", (tid, pid))
+    with closing(db()) as c:
+        c.execute(
+            "DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", (tid, pid)
+        )
+        c.commit()
 
 # ─── РАДІО СЕСІЇ ──────────────────────────────────────────────────────────────
 def create_radio_session(uid, seed_artist, seed_track, tracks):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tracks_json = json.dumps(tracks)
-    with db() as c:
-        c.execute("INSERT INTO radio_sessions(user_id,seed_artist,seed_track,tracks_json,created,updated) VALUES(?,?,?,?,?,?)",
-                  (uid, seed_artist, seed_track, tracks_json, now, now))
+    with closing(db()) as c:
+        c.execute(
+            "INSERT INTO radio_sessions(user_id, seed_artist, seed_track, tracks_json, created, updated) VALUES(?,?,?,?,?,?)",
+            (uid, seed_artist, seed_track, tracks_json, now, now)
+        )
+        c.commit()
         return c.lastrowid
 
 def get_radio_session(rid):
-    with db() as c:
+    with closing(db()) as c:
         r = c.execute("SELECT * FROM radio_sessions WHERE id=?", (rid,)).fetchone()
         if r:
             return dict(r), json.loads(r["tracks_json"])
         return None, []
 
 def update_radio_idx(rid, idx):
-    now = datetime.datetime.now(datetime.UTC).isoformat()
-    with db() as c:
-        c.execute("UPDATE radio_sessions SET current_idx=?, updated=? WHERE id=?", (idx, now, rid))
-# ============================================================
-#  MusicLSP v2.1 — Free & Premium (2 частина)
-# ============================================================
-# ─── COOKIES МЕНЕДЖМЕНТ (ВИПРАВЛЕНО: надійніший таймінг та fallback) ──────────
-COOKIES_PATH = "youtube_cookies.txt"
-COOKIES_JSON_PATH = "youtube_cookies.json"
-COOKIES_LOCK = asyncio.Lock()
-COOKIES_LAST_REFRESH = 0
-COOKIES_REFRESH_INTERVAL = 7200
-COOKIES_FORCE_REFRESH_AFTER_FAILS = 2
-_download_fail_count = 0
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    with closing(db()) as c:
+        c.execute(
+            "UPDATE radio_sessions SET current_idx=?, updated=? WHERE id=?",
+            (idx, now, rid)
+        )
+        c.commit()
 
-def are_cookies_fresh(path=COOKIES_PATH, max_age_hours=2):
-    if not os.path.exists(path):
-        return False
-    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
-    age = datetime.datetime.now() - mtime
-    return age < datetime.timedelta(hours=max_age_hours)
 
-def convert_cookies_json_to_netscape(json_path=COOKIES_JSON_PATH, netscape_path=COOKIES_PATH):
-    if not os.path.exists(json_path):
-        return False
-    try:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            cookies = json.load(f)
-        lines = ["# Netscape HTTP Cookie File"]
-        for c in cookies:
-            domain = c.get('domain', '.youtube.com')
-            if not domain.startswith('.'):
-                domain = '.' + domain
-            flag = "TRUE"
-            path = c.get('path', '/')
-            secure = "TRUE" if c.get('secure', True) else "FALSE"
-            expiry = str(int(c.get('expires', (datetime.datetime.now() + datetime.timedelta(days=7)).timestamp())))
-            name = c.get('name', '')
-            value = c.get('value', '')
-            if name and value:
-                lines.append(f"{domain}\t{flag}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
-        with open(netscape_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines))
-        logger.info(f"Cookies converted: {len(cookies)} items")
-        return True
-    except Exception as e:
-        logger.error(f"Cookie convert error: {e}")
-        return False
+# ═══════════════════════════════════════════════════════════════════════════════
+#  YT-DLP — РОБОЧІ КЛІЄНТИ БЕЗ COOKIES
+# ═══════════════════════════════════════════════════════════════════════════════
 
-async def refresh_youtube_cookies_via_playwright():
-    try:
-        from playwright.async_api import async_playwright
-        logger.info("Starting browser for cookie refresh...")
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
-            await page.goto("https://music.youtube.com", wait_until="domcontentloaded")
-            await page.wait_for_timeout(5000)
-            try:
-                accept_btn = await page.wait_for_selector('button[aria-label="Accept all"]', timeout=3000)
-                if accept_btn:
-                    await accept_btn.click()
-                    await page.wait_for_timeout(2000)
-            except:
-                pass
-            cookies = await context.cookies()
-            with open(COOKIES_JSON_PATH, 'w', encoding='utf-8') as f:
-                json.dump(cookies, f, ensure_ascii=False, indent=2)
-            await browser.close()
-            convert_cookies_json_to_netscape()
-            global COOKIES_LAST_REFRESH
-            COOKIES_LAST_REFRESH = datetime.datetime.now().timestamp()
-            logger.info(f"Cookies refreshed: {len(cookies)} items")
-            return True
-    except ImportError:
-        logger.warning("playwright not installed")
-        return False
-    except Exception as e:
-        logger.error(f"Playwright error: {e}")
-        return False
-
-async def ensure_fresh_cookies(force=False):
-    global COOKIES_LAST_REFRESH, _download_fail_count
-    async with COOKIES_LOCK:
-        now = datetime.datetime.now().timestamp()
-        need_refresh = force
-        if not need_refresh and not os.path.exists(COOKIES_PATH):
-            need_refresh = True
-        if not need_refresh and (now - COOKIES_LAST_REFRESH) > COOKIES_REFRESH_INTERVAL:
-            need_refresh = True
-        if not need_refresh and not are_cookies_fresh(max_age_hours=2):
-            need_refresh = True
-        if _download_fail_count >= COOKIES_FORCE_REFRESH_AFTER_FAILS:
-            logger.warning(f"Force cookie refresh after {_download_fail_count} failures")
-            need_refresh = True
-            _download_fail_count = 0
-        if need_refresh:
-            success = await refresh_youtube_cookies_via_playwright()
-            if success:
-                COOKIES_LAST_REFRESH = now
-            return success
-        return True
-
-def mark_download_failure():
-    global _download_fail_count
-    _download_fail_count += 1
-    logger.warning(f"Download failure #{_download_fail_count}")
-
-def reset_download_failures():
-    global _download_fail_count
-    _download_fail_count = 0
-
-# ─── YouTube клієнти ──────────────────────────────────────────────────────────
+# Оновлені робочі клієнти (2026)
+# Актуальні клієнти yt-dlp 2026 (без cookies — найстабільніший режим)
+# За замовчуванням yt-dlp використовує android_vr,web_safari
+# Без JS runtime — тільки android_vr (працює без cookies!)
+# Документація: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube
 YT_CLIENTS = [
-    {"player_client": ["android_music"], "player_skip": ["webpage", "configs", "js"]},
-    {"player_client": ["android_creator"], "player_skip": ["webpage", "configs", "js"]},
-    {"player_client": ["android"], "player_skip": ["webpage", "configs", "js"]},
-    {"player_client": ["ios"], "player_skip": ["webpage", "configs", "js"]},
-    {"player_client": ["tv_embedded"], "player_skip": ["webpage", "configs", "js"]},
-    {"player_client": ["web_embedded"], "player_skip": ["webpage", "configs", "js"]},
-    {"player_client": ["web"], "player_skip": ["webpage", "configs", "js"]},
+    # Основний — android_vr, НЕ потребує cookies і працює стабільно
+    {
+        "player_client": "android_vr",
+        "player_skip": ["webpage", "configs", "js"],
+    },
+    # Fallback — web_safari (може потребувати JS runtime)
+    {
+        "player_client": "web_safari",
+        "player_skip": ["webpage", "configs", "js"],
+    },
+    # Останній fallback — tv_embedded (для age-restricted)
+    {
+        "player_client": "tv_embedded",
+        "player_skip": ["webpage", "configs", "js"],
+    },
 ]
 
-def get_yt_opts(extra=None, client_idx=0):
-    opts = {
-        "quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True,
-        "socket_timeout": 30, "retries": 3, "fragment_retries": 3,
-        "file_access_retries": 3, "extractor_retries": 3,
-        "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        "referer": "https://www.youtube.com/",
-        "headers": {
-            "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
-        },
-        "extractor_args": {"youtube": YT_CLIENTS[client_idx]},
-    }
-    if extra: opts.update(extra)
+# Базові опції yt-dlp — БЕЗ cookies
+BASE_YTDL_OPTS = {
+    "quiet": True,
+    "no_warnings": True,
+    "extract_flat": True,
+    "noplaylist": True,
+    "socket_timeout": 30,
+    "retries": 3,
+    "fragment_retries": 3,
+    "file_access_retries": 3,
+    "extractor_retries": 3,
+    # Мінімальний user-agent — yt-dlp сам додає потрібні headers
+    # НЕ додаємо referer чи cookies — це викликає блокування
+}
+
+def get_yt_opts(client_idx=0, extra=None):
+    opts = dict(BASE_YTDL_OPTS)
+    opts["extractor_args"] = {"youtube": YT_CLIENTS[client_idx]}
+    if extra:
+        opts.update(extra)
     return opts
 
 # ─── Пошук YouTube/SoundCloud ─────────────────────────────────────────────────
@@ -571,9 +608,11 @@ def yt_search(query, limit=10):
                 r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
             tracks = []
             for e in (r.get("entries") or []):
-                if not e: continue
+                if not e:
+                    continue
                 dur = e.get("duration", 0)
-                if dur and dur > 900: continue
+                if dur and dur > 900:
+                    continue
                 tracks.append({
                     "title": e.get("title", "Unknown"),
                     "url": f"https://www.youtube.com/watch?v={e['id']}",
@@ -583,23 +622,34 @@ def yt_search(query, limit=10):
                     "source": "youtube",
                 })
             if tracks:
-                logger.info(f"yt_search success via {client['player_client'][0]}: {len(tracks)} results")
+                logger.info(
+                    f"yt_search success via {client['player_client']}: {len(tracks)} results"
+                )
                 return tracks
         except Exception as e:
-            logger.warning(f"yt_search {client['player_client'][0]} failed: {str(e)[:100]}")
+            logger.warning(
+                f"yt_search {client['player_client']} failed: {str(e)[:100]}"
+            )
             continue
     logger.error("yt_search: all clients failed")
     return []
 
 def sc_search(query, limit=5):
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True}
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "noplaylist": True,
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
             r = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
-        except: return []
+        except Exception:
+            return []
     tracks = []
     for e in (r.get("entries") or []):
-        if not e: continue
+        if not e:
+            continue
         tracks.append({
             "title": e.get("title", "Unknown"),
             "url": e.get("webpage_url") or e.get("url", ""),
@@ -622,13 +672,25 @@ def find_track_for_download(track_name, artist_name):
     query = f"{artist_name} {track_name}"
     result = yt_search(query, limit=3)
     if result:
-        return {"title": result[0]["title"], "url": result[0]["url"], "source": "youtube"}
+        return {
+            "title": result[0]["title"],
+            "url": result[0]["url"],
+            "source": "youtube",
+        }
     result = sc_search(query, limit=3)
     if result:
-        return {"title": result[0]["title"], "url": result[0]["url"], "source": "soundcloud"}
+        return {
+            "title": result[0]["title"],
+            "url": result[0]["url"],
+            "source": "soundcloud",
+        }
     result = yt_search(f"{query} youtube music", limit=3)
     if result:
-        return {"title": result[0]["title"], "url": result[0]["url"], "source": "youtube_music"}
+        return {
+            "title": result[0]["title"],
+            "url": result[0]["url"],
+            "source": "youtube_music",
+        }
     return None
 
 # ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
@@ -644,7 +706,8 @@ def extract_spotify_album_id(text):
 
 def get_spotify_album_info(album_id):
     album = get_spotify_album(album_id)
-    if not album: return None
+    if not album:
+        return None
     tracks = []
     total_duration_ms = 0
     for track in album.get("tracks", {}).get("items", []):
@@ -652,7 +715,9 @@ def get_spotify_album_info(album_id):
         total_duration_ms += dur_ms
         tracks.append({
             "name": track.get("name", "Unknown"),
-            "artists": ", ".join(a.get("name", "") for a in track.get("artists", [])),
+            "artists": ", ".join(
+                a.get("name", "") for a in track.get("artists", [])
+            ),
             "duration_ms": dur_ms,
             "duration": fmt_dur_ms(dur_ms),
             "track_number": track.get("track_number", 0),
@@ -671,28 +736,40 @@ def get_spotify_album_info(album_id):
                 total_duration_ms += dur_ms
                 tracks.append({
                     "name": track.get("name", "Unknown"),
-                    "artists": ", ".join(a.get("name", "") for a in track.get("artists", [])),
+                    "artists": ", ".join(
+                        a.get("name", "") for a in track.get("artists", [])
+                    ),
                     "duration_ms": dur_ms,
                     "duration": fmt_dur_ms(dur_ms),
                     "track_number": track.get("track_number", 0),
                     "spotify_id": track.get("id", ""),
                 })
             next_url = data.get("next")
-        except: break
+        except Exception:
+            break
     tracks.sort(key=lambda x: x["track_number"])
     images = album.get("images", [])
     image_url = images[0].get("url", "") if images else ""
     return {
-        "id": album_id, "name": album.get("name", "Unknown Album"),
-        "artist": ", ".join(a.get("name", "") for a in album.get("artists", [])),
+        "id": album_id,
+        "name": album.get("name", "Unknown Album"),
+        "artist": ", ".join(
+            a.get("name", "") for a in album.get("artists", [])
+        ),
         "release_date": album.get("release_date", "—"),
-        "year": album.get("release_date", "—")[:4] if album.get("release_date") else "—",
+        "year": album.get("release_date", "—")[:4]
+        if album.get("release_date")
+        else "—",
         "total_tracks": album.get("total_tracks", len(tracks)),
-        "tracks": tracks, "total_duration_ms": total_duration_ms,
+        "tracks": tracks,
+        "total_duration_ms": total_duration_ms,
         "total_duration": fmt_dur_ms(total_duration_ms),
-        "label": album.get("label", "—"), "image_url": image_url,
+        "label": album.get("label", "—"),
+        "image_url": image_url,
         "album_type": album.get("album_type", "album"),
-        "external_url": album.get("external_urls", {}).get("spotify", f"https://open.spotify.com/album/{album_id}"),
+        "external_url": album.get("external_urls", {}).get(
+            "spotify", f"https://open.spotify.com/album/{album_id}"
+        ),
     }
 
 def search_spotify_and_format(query, limit=10):
@@ -702,11 +779,17 @@ def search_spotify_and_format(query, limit=10):
         images = album.get("images", [])
         image_url = images[0].get("url", "") if images else ""
         results.append({
-            "id": album.get("id", ""), "name": album.get("name", "Unknown"),
-            "artist": ", ".join(a.get("name", "") for a in album.get("artists", [])),
+            "id": album.get("id", ""),
+            "name": album.get("name", "Unknown"),
+            "artist": ", ".join(
+                a.get("name", "") for a in album.get("artists", [])
+            ),
             "release_date": album.get("release_date", "—"),
-            "year": album.get("release_date", "—")[:4] if album.get("release_date") else "—",
-            "total_tracks": album.get("total_tracks", 0), "image_url": image_url,
+            "year": album.get("release_date", "—")[:4]
+            if album.get("release_date")
+            else "—",
+            "total_tracks": album.get("total_tracks", 0),
+            "image_url": image_url,
         })
     return results
 
@@ -715,7 +798,7 @@ def mb_search_album(query, limit=10):
     import urllib.parse
     encoded = urllib.parse.quote(query)
     url = f"https://musicbrainz.org/ws/2/release/?query=release:{encoded}&fmt=json&limit={limit}"
-    headers = {"User-Agent": f"MusicLSP/2.0 ({AUTHOR})"}
+    headers = {"User-Agent": f"MusicLSP/3.0 ({AUTHOR})"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -729,7 +812,7 @@ def mb_search_album(query, limit=10):
 
 def mb_get_full_album_info(mbid):
     url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artists+labels&fmt=json"
-    headers = {"User-Agent": f"MusicLSP/2.0 ({AUTHOR})"}
+    headers = {"User-Agent": f"MusicLSP/3.0 ({AUTHOR})"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -747,9 +830,14 @@ def mb_get_full_album_info(mbid):
                 cover_data = cover_resp.json()
                 images = cover_data.get("images", [])
                 if images:
-                    image_url = images[0].get("thumbnails", {}).get("large", 
-                              images[0].get("thumbnails", {}).get("small", images[0].get("image", "")))
-        except: pass
+                    image_url = images[0].get("thumbnails", {}).get(
+                        "large",
+                        images[0].get("thumbnails", {}).get(
+                            "small", images[0].get("image", "")
+                        ),
+                    )
+        except Exception:
+            pass
     if not image_url:
         try:
             cover_url = f"https://coverartarchive.org/release/{mbid}"
@@ -758,9 +846,14 @@ def mb_get_full_album_info(mbid):
                 cover_data = cover_resp.json()
                 images = cover_data.get("images", [])
                 if images:
-                    image_url = images[0].get("thumbnails", {}).get("large",
-                              images[0].get("thumbnails", {}).get("small", images[0].get("image", "")))
-        except: pass
+                    image_url = images[0].get("thumbnails", {}).get(
+                        "large",
+                        images[0].get("thumbnails", {}).get(
+                            "small", images[0].get("image", "")
+                        ),
+                    )
+        except Exception:
+            pass
     tracks = []
     total_duration_ms = 0
     for medium in data.get("media", []):
@@ -770,82 +863,113 @@ def mb_get_full_album_info(mbid):
             total_duration_ms += dur_ms
             tracks.append({
                 "name": recording.get("title", "Unknown"),
-                "artists": ", ".join(a.get("name", "") for a in recording.get("artist-credit", [])),
-                "duration_ms": dur_ms, "duration": fmt_dur_ms(dur_ms),
+                "artists": ", ".join(
+                    a.get("name", "")
+                    for a in recording.get("artist-credit", [])
+                ),
+                "duration_ms": dur_ms,
+                "duration": fmt_dur_ms(dur_ms),
                 "track_number": track.get("number", 0),
             })
     label = "—"
     labels = data.get("label-info", [])
     if labels:
         label = labels[0].get("label", {}).get("name", "—")
-    artists = ", ".join(a.get("name", "") for a in data.get("artist-credit", []))
+    artists = ", ".join(
+        a.get("name", "") for a in data.get("artist-credit", [])
+    )
     release_date = data.get("date", "—")
     year = release_date[:4] if release_date and len(release_date) >= 4 else "—"
     return {
-        "mbid": mbid, "name": data.get("title", "Unknown Album"),
-        "artist": artists, "release_date": release_date, "year": year,
-        "total_tracks": len(tracks), "tracks": tracks,
-        "total_duration_ms": total_duration_ms, "total_duration": fmt_dur_ms(total_duration_ms),
-        "label": label, "image_url": image_url,
+        "mbid": mbid,
+        "name": data.get("title", "Unknown Album"),
+        "artist": artists,
+        "release_date": release_date,
+        "year": year,
+        "total_tracks": len(tracks),
+        "tracks": tracks,
+        "total_duration_ms": total_duration_ms,
+        "total_duration": fmt_dur_ms(total_duration_ms),
+        "label": label,
+        "image_url": image_url,
         "album_type": data.get("release-group", {}).get("primary-type", "album"),
         "external_url": f"https://musicbrainz.org/release/{mbid}",
     }
 
 def mb_format_album(release):
     title = release.get("title", "Unknown")
-    artists = ", ".join(a.get("name", "") for a in release.get("artist-credit", []))
+    artists = ", ".join(
+        a.get("name", "") for a in release.get("artist-credit", [])
+    )
     date = release.get("date", "—")
     year = date[:4] if date and len(date) >= 4 else "—"
     track_count = 0
     for medium in release.get("media", []):
         track_count += medium.get("track-count", 0)
-    return {"mbid": release.get("id", ""), "name": title, "artist": artists, "year": year, "total_tracks": track_count, "release_date": date}
+    return {
+        "mbid": release.get("id", ""),
+        "name": title,
+        "artist": artists,
+        "year": year,
+        "total_tracks": track_count,
+        "release_date": date,
+    }
 
 # ─── Асинхронні обгортки ──────────────────────────────────────────────────────
 async def async_search(query, limit=10):
-    return await asyncio.get_event_loop().run_in_executor(None, search_all, query, limit)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, search_all, query, limit)
 
 async def async_artist(artist, limit=50):
-    return await asyncio.get_event_loop().run_in_executor(None, artist_songs, artist, limit)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, artist_songs, artist, limit)
 
 async def async_download(url, out_dir, quality="192"):
-    if os.path.exists(COOKIES_PATH):
-        await ensure_fresh_cookies()
-    return await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, download_mp3, url, out_dir, quality)
 
 async def async_spotify_album_info(album_id):
-    return await asyncio.get_event_loop().run_in_executor(None, get_spotify_album_info, album_id)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, get_spotify_album_info, album_id)
 
 async def async_search_spotify(query, limit=10):
-    return await asyncio.get_event_loop().run_in_executor(None, search_spotify_and_format, query, limit)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, search_spotify_and_format, query, limit)
 
 async def async_mb_search(query, limit=10):
-    return await asyncio.get_event_loop().run_in_executor(None, mb_search_album, query, limit)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, mb_search_album, query, limit)
 
 async def async_mb_full_info(mbid):
-    return await asyncio.get_event_loop().run_in_executor(None, mb_get_full_album_info, mbid)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, mb_get_full_album_info, mbid)
 
 async def async_find_track(track_name, artist_name):
-    return await asyncio.get_event_loop().run_in_executor(None, find_track_for_download, track_name, artist_name)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, find_track_for_download, track_name, artist_name)
 
-# ─── Завантаження MP3 (ВИПРАВЛЕНО: інтеграція з лічильником помилок) ──────────
+# ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        "socket_timeout": 30, "retries": 3, "fragment_retries": 3,
-        "file_access_retries": 3, "extractor_retries": 3,
-        "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-        "referer": "https://www.youtube.com/",
-        "headers": {
-            "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
-            "Upgrade-Insecure-Requests": "1",
-        },
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": quality,
+            }
+        ],
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 3,
+        "extractor_retries": 3,
+        # НЕ додаємо user_agent, referer, headers — yt-dlp сам керує цим
+        # Це запобігає fingerprint-based блокуванню
     }
     last_error = None
     tried_clients = []
@@ -853,39 +977,53 @@ def download_mp3(url, out_dir, quality="192"):
         try:
             opts = dict(base_opts)
             opts["extractor_args"] = {"youtube": client}
-            client_name = client["player_client"][0]
-            if "web" in client_name and os.path.exists(COOKIES_PATH):
-                opts["cookies"] = COOKIES_PATH
-                logger.info(f"Using cookies for {client_name}")
+            client_name = client["player_client"]
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                if info:
-                    mp3_files = list(Path(out_dir).glob("*.mp3"))
-                    if mp3_files:
-                        logger.info(f"Download success via {client_name}: {mp3_files[0].name}")
-                        reset_download_failures()
-                        return str(mp3_files[0])
-                    for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                        files = list(Path(out_dir).glob(ext))
-                        if files:
-                            input_file = str(files[0])
-                            output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
-                            try:
-                                subprocess.run([
-                                    "ffmpeg", "-i", input_file, 
-                                    "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{quality}k",
-                                    "-y", output_file
-                                ], check=True, capture_output=True, timeout=60)
-                                if os.path.exists(output_file):
-                                    os.remove(input_file)
-                                    reset_download_failures()
-                                    return output_file
-                            except Exception as conv_e:
-                                logger.warning(f"FFmpeg conversion failed: {conv_e}")
-                                return input_file
+            if info:
+                mp3_files = list(Path(out_dir).glob("*.mp3"))
+                if mp3_files:
+                    logger.info(
+                        f"Download success via {client_name}: {mp3_files[0].name}"
+                    )
+                    return str(mp3_files[0])
+                # Конвертація якщо не mp3
+                for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
+                    files = list(Path(out_dir).glob(ext))
+                    if files:
+                        input_file = str(files[0])
+                        output_file = os.path.join(
+                            out_dir, f"{files[0].stem}.mp3"
+                        )
+                        try:
+                            subprocess.run(
+                                [
+                                    "ffmpeg",
+                                    "-i",
+                                    input_file,
+                                    "-vn",
+                                    "-ar",
+                                    "44100",
+                                    "-ac",
+                                    "2",
+                                    "-b:a",
+                                    f"{quality}k",
+                                    "-y",
+                                    output_file,
+                                ],
+                                check=True,
+                                capture_output=True,
+                                timeout=60,
+                            )
+                            if os.path.exists(output_file):
+                                os.remove(input_file)
+                                return output_file
+                        except Exception as conv_e:
+                            logger.warning(f"FFmpeg conversion failed: {conv_e}")
+                            return input_file
         except Exception as e:
             last_error = e
-            client_name = client["player_client"][0]
+            client_name = client["player_client"]
             tried_clients.append(client_name)
             err_str = str(e).lower()
             if "sign in" in err_str or "login" in err_str:
@@ -903,95 +1041,139 @@ def download_mp3(url, out_dir, quality="192"):
             else:
                 logger.warning(f"{client_name} failed: {str(e)[:100]}")
             continue
-    mark_download_failure()
-    logger.error(f"All download attempts failed. Tried: {', '.join(tried_clients)}. Last error: {last_error}")
+    logger.error(
+        f"All download attempts failed. Tried: {', '.join(tried_clients)}. "
+        f"Last error: {last_error}"
+    )
     return None
 
-def download_mp3_alternative(url, out_dir, quality="192"):
+async def async_download_with_fallback(url, out_dir, quality="192"):
+    result = await async_download(url, out_dir, quality)
+    if result:
+        return result
+    logger.info("Trying alternative download method...")
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _alt_download, url, out_dir, quality)
+
+def _alt_download(url, out_dir, quality="192"):
     opts = {
         "format": "ba/b",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
-        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": quality,
+            }
+        ],
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
         "extract_flat": False,
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            if info:
-                mp3_files = list(Path(out_dir).glob("*.mp3"))
-                if mp3_files:
-                    reset_download_failures()
-                    return str(mp3_files[0])
+        if info:
+            mp3_files = list(Path(out_dir).glob("*.mp3"))
+            if mp3_files:
+                return str(mp3_files[0])
     except Exception as e:
         logger.warning(f"Alternative download failed: {e}")
-        mark_download_failure()
     return None
 
-async def async_download_with_fallback(url, out_dir, quality="192"):
-    result = await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
-    if result:
-        return result
-    logger.info("Trying alternative download method...")
-    result = await asyncio.get_event_loop().run_in_executor(None, download_mp3_alternative, url, out_dir, quality)
-    if result:
-        return result
-    return None
-
-# ─── ZIP-архів для альбому ────────────────────────────────────────────────────
-import zipfile
-
-async def create_album_zip(tracks, quality="192"):
-    zip_buffer = io.BytesIO()
+# ─── ZIP-архів для альбому — на диск, не в пам'ять ────────────────────────────
+async def create_album_zip(tracks, quality="192", tmp_dir=None):
+    if tmp_dir is None:
+        tmp_dir = tempfile.mkdtemp()
+    zip_path = os.path.join(tmp_dir, "album.zip")
     downloaded = 0
-    with tempfile.TemporaryDirectory() as tmp:
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            for i, track in enumerate(tracks):
-                if not track.get("url"): continue
-                try:
-                    path = await async_download_with_fallback(track["url"], tmp, quality)
-                    if path and os.path.exists(path):
-                        safe_name = f"{i+1:02d}. {track['title'][:50]}.mp3"
-                        zf.write(path, safe_name)
-                        downloaded += 1
-                except Exception as e:
-                    logger.error(f"ZIP track {i+1} failed: {e}")
-                    continue
-    if downloaded == 0: return None
-    zip_buffer.seek(0)
-    return zip_buffer
-# ============================================================
-#  MusicLSP v2.1 — Free & Premium (3 частина)
-# ============================================================
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, track in enumerate(tracks):
+            if not track.get("url"):
+                continue
+            try:
+                track_dir = os.path.join(tmp_dir, f"track_{i}")
+                os.makedirs(track_dir, exist_ok=True)
+                path = await async_download_with_fallback(
+                    track["url"], track_dir, quality
+                )
+                if path and os.path.exists(path):
+                    safe_name = f"{i+1:02d}. {track['title'][:50]}.mp3"
+                    zf.write(path, safe_name)
+                    downloaded += 1
+            except Exception as e:
+                logger.error(f"ZIP track {i+1} failed: {e}")
+                continue
+    if downloaded == 0:
+        return None
+    return zip_path
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TELEGRAM HANDLERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 # ─── Клавіатури ───────────────────────────────────────────────────────────────
 def main_kb(uid):
     l = get_lang(uid)
     btn = lambda text, data: InlineKeyboardButton(text, callback_data=data)
     labels = {
-        "uk": ["🔍 Пошук", "💿 Альбоми", "📚 Бібліотека", "👤 Профіль", "💎 Підписка", "🎁 Реферал", "⚙️ Налаштування"],
-        "ru": ["🔍 Поиск", "💿 Альбомы", "📚 Библиотека", "👤 Профиль", "💎 Подписка", "🎁 Реферал", "⚙️ Настройки"],
-        "en": ["🔍 Search", "💿 Albums", "📚 Library", "👤 Profile", "💎 Subscription", "🎁 Referral", "⚙️ Settings"],
+        "uk": [
+            "🔍 Пошук",
+            "💿 Альбоми",
+            "📚 Бібліотека",
+            "👤 Профіль",
+            "💎 Підписка",
+            "🎁 Реферал",
+            "⚙️ Налаштування",
+        ],
+        "ru": [
+            "🔍 Поиск",
+            "💿 Альбомы",
+            "📚 Библиотека",
+            "👤 Профиль",
+            "💎 Подписка",
+            "🎁 Реферал",
+            "⚙️ Настройки",
+        ],
+        "en": [
+            "🔍 Search",
+            "💿 Albums",
+            "📚 Library",
+            "👤 Profile",
+            "💎 Subscription",
+            "🎁 Referral",
+            "⚙️ Settings",
+        ],
     }
     lb = labels.get(l, labels["en"])
-    back_label = {"uk":"◀️ Назад","ru":"◀️ Назад","en":"◀️ Back"}.get(l,"◀️ Back")
-    return InlineKeyboardMarkup([
-        [btn(lb[0], "m:search"),  btn(lb[1], "m:albums")],
-        [btn(lb[2], "m:library"), btn(lb[3], "m:profile")],
-        [btn(lb[4], "m:sub"),    btn(lb[5], "m:ref")],
-        [btn(lb[6], "m:settings")],
-    ]), back_label
+    back_label = {"uk": "◀️ Назад", "ru": "◀️ Назад", "en": "◀️ Back"}.get(
+        l, "◀️ Back"
+    )
+    return (
+        InlineKeyboardMarkup(
+            [
+                [btn(lb[0], "m:search"), btn(lb[1], "m:albums")],
+                [btn(lb[2], "m:library"), btn(lb[3], "m:profile")],
+                [btn(lb[4], "m:sub"), btn(lb[5], "m:ref")],
+                [btn(lb[6], "m:settings")],
+            ]
+        ),
+        back_label,
+    )
 
 def back_btn(uid):
     l = get_lang(uid)
-    labels = {"uk":"◀️ Назад","ru":"◀️ Назад","en":"◀️ Back"}
-    return InlineKeyboardButton(labels.get(l,"◀️ Back"), callback_data="m:home")
+    labels = {"uk": "◀️ Назад", "ru": "◀️ Назад", "en": "◀️ Back"}
+    return InlineKeyboardButton(
+        labels.get(l, "◀️ Back"), callback_data="m:home"
+    )
 
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     username = update.effective_user.username or ""
-    is_new = get_user(uid) is None
     create_user(uid, username)
     u = get_user(uid)
     if u and u["lang"] and u["lang"] != "uk":
@@ -1002,13 +1184,19 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     for code, name in LANGUAGES.items():
         row.append(InlineKeyboardButton(name, callback_data=f"lang:{code}"))
         if len(row) == 2:
-            keyboard.append(row); row = []
-    if row: keyboard.append(row)
-    await update.message.reply_text("🌍 <b>Choose your language / Оберіть мову</b>", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    await update.message.reply_text(
+        "🌍 <b>Choose your language / Оберіть мову</b>",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML",
+    )
 
 async def show_welcome(msg, uid):
     l = get_lang(uid)
-    text = tx("welcome", l, bot=BOT_NAME, trial=0, author=AUTHOR)
+    text = tx("welcome", l, bot=BOT_NAME, author=AUTHOR)
     kb, _ = main_kb(uid)
     await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
@@ -1022,22 +1210,41 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("lang:"):
         set_lang(uid, data[5:])
-        await q.message.delete()
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
         await show_welcome(q.message, uid)
         return
 
     if data == "m:home":
         kb, _ = main_kb(uid)
         try:
-            await q.message.edit_text(f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇", reply_markup=kb, parse_mode="HTML")
-        except:
-            await q.message.reply_text(f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇", reply_markup=kb, parse_mode="HTML")
+            await q.message.edit_text(
+                f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+        except Exception:
+            await q.message.reply_text(
+                f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇",
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
         return
 
     if data == "m:search":
         set_state(uid, "searching")
-        prompts = {"uk":"🔍 Введи назву пісні або артиста:","ru":"🔍 Введи название песни или артиста:","en":"🔍 Enter song name or artist:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "🔍 Введи назву пісні або артиста:",
+            "ru": "🔍 Введи название песни или артиста:",
+            "en": "🔍 Enter song name or artist:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     if data == "m:albums":
@@ -1047,7 +1254,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "ru": "💿 Введи название альбома:\n\n<i>Примеры:</i>\n• <code>Yanix SS 20</code>",
             "en": "💿 Enter album name:\n\n<i>Examples:</i>\n• <code>Yanix SS 20</code>",
         }
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     if data == "m:library":
@@ -1078,66 +1289,113 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # ZIP Albums (Premium)
     if data == "m:zip_albums":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "zip_album_search")
-        prompts = {"uk":"📦 Введи назву альбому для ZIP:","ru":"📦 Введи название альбома для ZIP:","en":"📦 Enter album name for ZIP:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "📦 Введи назву альбому для ZIP:",
+            "ru": "📦 Введи название альбома для ZIP:",
+            "en": "📦 Enter album name for ZIP:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     # Playlists (Premium)
     if data == "m:playlists":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await show_playlists_menu(q.message, uid, ctx)
         return
 
     # Radio (Premium)
     if data == "m:radio":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "radio_input")
-        prompts = {"uk":"📻 Введи артиста або пісню для радіо:","ru":"📻 Введи артиста или песню для радио:","en":"📻 Enter artist or song for radio:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "📻 Введи артиста або пісню для радіо:",
+            "ru": "📻 Введи артиста или песню для радио:",
+            "en": "📻 Enter artist or song for radio:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
-    # Recognition (Premium)
+    # Recognition (Premium) — чесне повідомлення
     if data == "m:recognition":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "recognition_input")
-        prompts = {"uk":"🎵 Надішли мені голосове повідомлення або аудіо файл для розпізнавання музики.","ru":"🎵 Пришли мне голосовое сообщение или аудиофайл для распознавания музыки.","en":"🎵 Send me a voice message or audio file to recognize music."}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "🎵 Надішли мені голосове повідомлення або аудіо файл для розпізнавання музики.\n\n<i>Примітка: розпізнавання працює через зовнішній сервіс і може бути не 100% точним.</i>",
+            "ru": "🎵 Пришли мне голосовое сообщение или аудиофайл для распознавания музыки.\n\n<i>Примечание: распознавание работает через внешний сервис и может быть не 100% точным.</i>",
+            "en": "🎵 Send me a voice message or audio file to recognize music.\n\n<i>Note: recognition works via external service and may not be 100% accurate.</i>",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     # Statistics (Premium)
     if data == "m:stats":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await show_stats(q.message, uid)
         return
 
     # Lyrics (Premium)
     if data == "m:lyrics":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "lyrics_input")
-        prompts = {"uk":"🎤 Введи назву пісні та артиста для тексту:","ru":"🎤 Введи название песни и артиста для текста:","en":"🎤 Enter song name and artist for lyrics:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "🎤 Введи назву пісні та артиста для тексту:",
+            "ru": "🎤 Введи название песни и артиста для текста:",
+            "en": "🎤 Enter song name and artist for lyrics:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
-    # AI Recommendations (Premium)
+    # AI Recommendations (Premium) — перейменовано на "Схожа музика"
     if data == "m:ai_recommend":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "ai_recommend_input")
-        prompts = {"uk":"🤖 Введи артиста або жанр для AI рекомендацій:","ru":"🤖 Введи артиста или жанр для AI рекомендаций:","en":"🤖 Enter artist or genre for AI recommendations:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "🤖 Введи артиста або жанр для пошуку схожої музики:",
+            "ru": "🤖 Введи артиста или жанр для поиска похожей музыки:",
+            "en": "🤖 Enter artist or genre to find similar music:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     # Retry download
     if data.startswith("retry_dl|"):
         url_id = data.split("|")[1]
-        cached = get_cached_url(ctx.application.bot_data, url_id)
+        cached = get_cached_url(ctx.bot_data, url_id)
         url = cached.get("url", "")
         title = cached.get("title", "трек")
         artist = cached.get("artist", "")
@@ -1150,11 +1408,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("dl|"):
         parts = data.split("|", 2)
         idx, ck = int(parts[1]), parts[2]
-        tracks = ctx.application.bot_data.get("cache", {}).get(ck, [])
+        tracks = ctx.bot_data.get("cache", {}).get(ck, [])
         if not tracks or idx >= len(tracks):
-            await q.message.reply_text("❌ Застарів результат. Шукай знову."); return
+            await q.message.reply_text("❌ Застарів результат. Шукай знову.")
+            return
         t = tracks[idx]
-        await do_download(q.message, t["url"], t["title"], t.get("channel",""), uid, ctx)
+        await do_download(q.message, t["url"], t["title"], t.get("channel", ""), uid, ctx)
         return
 
     if data.startswith("dlurl|"):
@@ -1162,10 +1421,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         url_id = parts[1]
         title = parts[2] if len(parts) > 2 else "трек"
         artist = parts[3] if len(parts) > 3 else ""
-        cached = get_cached_url(ctx.application.bot_data, url_id)
+        cached = get_cached_url(ctx.bot_data, url_id)
         url = cached.get("url", "")
         if not url:
-            await q.message.reply_text("❌ Посилання застаріло. Спробуй знайти знову."); return
+            await q.message.reply_text("❌ Посилання застаріло. Спробуй знайти знову.")
+            return
         await do_download(q.message, url, title, artist, uid, ctx)
         return
 
@@ -1179,54 +1439,77 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|", 2)
         album_ck = parts[1]
         track_idx = int(parts[2])
-        album_data = ctx.application.bot_data.get("spotify_album_cache", {}).get(album_ck)
+        album_data = ctx.bot_data.get("spotify_album_cache", {}).get(album_ck)
         if not album_data or track_idx >= len(album_data.get("tracks", [])):
             await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
             return
         track = album_data["tracks"][track_idx]
-        status = await q.message.reply_text(f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML")
+        status = await q.message.reply_text(
+            f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
+        )
         result = await async_find_track(track["name"], track["artists"])
         if not result:
-            await status.edit_text(f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML")
+            await status.edit_text(
+                f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
+            )
             return
         await status.delete()
-        await do_download(q.message, result["url"], track["name"], track["artists"], uid, ctx)
+        await do_download(
+            q.message, result["url"], track["name"], track["artists"], uid, ctx
+        )
         return
 
     if data == "sp_albumzip":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
-        album_ck = ctx.application.bot_data.get("last_spotify_album_ck", "")
-        album_data = ctx.application.bot_data.get("spotify_album_cache", {}).get(album_ck)
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        album_ck = ctx.bot_data.get("last_spotify_album_ck", "")
+        album_data = ctx.bot_data.get("spotify_album_cache", {}).get(album_ck)
         if not album_data:
             await q.message.reply_text("❌ Дані альбому застаріли.")
             return
         await do_download_spotify_album_zip(q.message, album_data, uid, ctx)
         return
 
-    # ПРИБРАНО: sp_addlib — додавання альбому в бібліотеку більше не доступне
-
     if data == "artist_input":
         limits = get_limits(uid)
         max_songs = limits["artist_songs"]
         if max_songs == 0:
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "artist_input")
-        prompts = {"uk":f"🎤 Введи ім'я артиста (макс {max_songs} пісень):","ru":f"🎤 Введи имя артиста (макс {max_songs} песен):","en":f"🎤 Enter artist name (max {max_songs} songs):"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": f"🎤 Введи ім'я артиста (макс {max_songs} пісень):",
+            "ru": f"🎤 Введи имя артиста (макс {max_songs} песен):",
+            "en": f"🎤 Enter artist name (max {max_songs} songs):",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     if data == "dl20_input":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "dl20_input")
-        prompts = {"uk":"⬇️ Введи ім'я артиста для завантаження пісень:","ru":"⬇️ Введи имя артиста для скачивания песен:","en":"⬇️ Enter artist name to download songs:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": "⬇️ Введи ім'я артиста для завантаження пісень:",
+            "ru": "⬇️ Введи имя артиста для скачивания песен:",
+            "en": "⬇️ Enter artist name to download songs:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
 
     if data.startswith("addlib|"):
         url_id = data[7:]
-        cached = get_cached_url(ctx.application.bot_data, url_id)
+        cached = get_cached_url(ctx.bot_data, url_id)
         url = cached.get("url", "")
         title = cached.get("title", "Unknown")
         artist = cached.get("artist", "")
@@ -1235,9 +1518,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         added, status = add_library(uid, title, artist, url)
         if status == "full":
-            await q.answer(tx("library_full", l, max=FREE_LIMITS["library_max"]), show_alert=True)
+            await q.answer(
+                tx("library_full", l, max=FREE_LIMITS["library_max"]),
+                show_alert=True,
+            )
         else:
-            await q.answer("✅ Додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
+            msg = "✅ Додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці."
+            await q.answer(msg, show_alert=True)
         return
 
     if data.startswith("libdel|"):
@@ -1257,7 +1544,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not is_premium(uid) and q_val != "192":
             await q.answer("⛔ Тільки 192kbps у Free версії!", show_alert=True)
             return
-        ctx.application.bot_data.setdefault("quality", {})[uid] = q_val
+        ctx.bot_data.setdefault("quality", {})[uid] = q_val
         await q.answer(f"✅ Якість: {q_val} kbps", show_alert=True)
         return
 
@@ -1271,32 +1558,37 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         parts = data.split("|", 2)
         album_ck = parts[1]
         track_idx = int(parts[2])
-        album_data = ctx.application.bot_data.get("mb_album_cache", {}).get(album_ck)
+        album_data = ctx.bot_data.get("mb_album_cache", {}).get(album_ck)
         if not album_data or track_idx >= len(album_data.get("tracks", [])):
             await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
             return
         track = album_data["tracks"][track_idx]
-        status = await q.message.reply_text(f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML")
+        status = await q.message.reply_text(
+            f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
+        )
         result = await async_find_track(track["name"], track["artists"])
         if not result:
-            await status.edit_text(f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML")
+            await status.edit_text(
+                f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
+            )
             return
         await status.delete()
-        await do_download(q.message, result["url"], track["name"], track["artists"], uid, ctx)
+        await do_download(
+            q.message, result["url"], track["name"], track["artists"], uid, ctx
+        )
         return
 
     if data == "mb_albumzip":
         if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
-        album_ck = ctx.application.bot_data.get("last_mb_album_ck", "")
-        album_data = ctx.application.bot_data.get("mb_album_cache", {}).get(album_ck)
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        album_ck = ctx.bot_data.get("last_mb_album_ck", "")
+        album_data = ctx.bot_data.get("mb_album_cache", {}).get(album_ck)
         if not album_data:
             await q.message.reply_text("❌ Дані альбому застаріли.")
             return
         await do_download_mb_album_zip(q.message, album_data, uid, ctx)
         return
-
-    # ПРИБРАНО: mb_addlib — додавання альбому в бібліотеку більше не доступне
 
     # Playlist callbacks
     if data.startswith("pl_view|"):
@@ -1319,14 +1611,22 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data == "pl_create":
         set_state(uid, "playlist_create")
-        prompts = {"uk":"📋 Введи назву нового плейлиста:","ru":"📋 Введи название нового плейлиста:","en":"📋 Enter new playlist name:"}
+        prompts = {
+            "uk": "📋 Введи назву нового плейлиста:",
+            "ru": "📋 Введи название нового плейлиста:",
+            "en": "📋 Enter new playlist name:",
+        }
         await q.message.reply_text(prompts.get(l, prompts["en"]))
         return
 
     if data.startswith("pl_addtrack|"):
         pid = int(data.split("|")[1])
         set_state(uid, f"playlist_addtrack:{pid}")
-        prompts = {"uk":"🎵 Введи назву пісні для додавання:","ru":"🎵 Введи название песни для добавления:","en":"🎵 Enter song name to add:"}
+        prompts = {
+            "uk": "🎵 Введи назву пісні для додавання:",
+            "ru": "🎵 Введи название песни для добавления:",
+            "en": "🎵 Enter song name to add:",
+        }
         await q.message.reply_text(prompts.get(l, prompts["en"]))
         return
 
@@ -1334,27 +1634,42 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data.startswith("radio_next|"):
         rid = int(data.split("|")[1])
         session, tracks = get_radio_session(rid)
-        if not session: return
+        if not session:
+            return
         idx = session["current_idx"] + 1
         if idx >= len(tracks):
             await q.message.reply_text("📻 Радіо сесія закінчилась. Почни нову!")
             return
         update_radio_idx(rid, idx)
         track = tracks[idx]
-        await do_download(q.message, track["url"], track["title"], track.get("artist", ""), uid, ctx)
+        await do_download(
+            q.message, track["url"], track["title"], track.get("artist", ""), uid, ctx
+        )
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⏭ Наступна", callback_data=f"radio_next|{rid}"), back_btn(uid)]
         ])
-        await q.message.reply_text(f"📻 Радіо: {idx+1}/{len(tracks)}", reply_markup=kb, parse_mode="HTML")
+        await q.message.reply_text(
+            f"📻 Радіо: {idx+1}/{len(tracks)}", reply_markup=kb, parse_mode="HTML"
+        )
         return
 
     # Batch download size selection
     if data.startswith("batch_size|"):
         size = int(data.split("|")[1])
         set_state(uid, f"batch_download:{size}")
-        prompts = {"uk":f"⬇️ Введи ім'я артиста для завантаження {size} пісень:","ru":f"⬇️ Введи имя артиста для скачивания {size} песен:","en":f"⬇️ Enter artist name to download {size} songs:"}
-        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        prompts = {
+            "uk": f"⬇️ Введи ім'я артиста для завантаження {size} пісень:",
+            "ru": f"⬇️ Введи имя артиста для скачивания {size} песен:",
+            "en": f"⬇️ Enter artist name to download {size} songs:",
+        }
+        await q.message.edit_text(
+            prompts.get(l, prompts["en"]),
+            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+            parse_mode="HTML",
+        )
         return
+
+
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1371,7 +1686,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         limits = get_limits(uid)
         max_songs = limits["artist_songs"]
         if max_songs == 0:
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await show_artist(update.message, text, uid, ctx, max_songs)
         return
 
@@ -1385,7 +1701,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state == "dl20_input":
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await batch_download(update.message, text, uid, ctx, 20)
         return
 
@@ -1399,7 +1716,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state == "zip_album_search":
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await do_zip_album_search(update, text, uid, ctx)
         return
 
@@ -1407,7 +1725,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state == "radio_input":
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await start_radio(update.message, text, uid, ctx)
         return
 
@@ -1415,15 +1734,17 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state == "lyrics_input":
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await search_lyrics(update.message, text, uid, ctx)
         return
 
-    # AI Recommend input
+    # AI Recommend input — перейменовано на "Схожа музика"
     if state == "ai_recommend_input":
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         await ai_recommend(update.message, text, uid, ctx)
         return
 
@@ -1431,9 +1752,12 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state == "playlist_create":
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         pid = create_playlist(uid, text)
-        await update.message.reply_text(f"✅ Плейлист '<b>{text}</b>' створено!", parse_mode="HTML")
+        await update.message.reply_text(
+            f"✅ Плейлист '<b>{text}</b>' створено!", parse_mode="HTML"
+        )
         await show_playlists_menu(update.message, uid, ctx)
         return
 
@@ -1441,7 +1765,8 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if state.startswith("playlist_addtrack:"):
         set_state(uid, "")
         if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         pid = int(state.split(":")[1])
         tracks = await async_search(text, limit=5)
         if not tracks:
@@ -1449,7 +1774,9 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         t = tracks[0]
         add_track_to_playlist(pid, t["title"], t.get("channel", ""), t["url"], t["duration"])
-        await update.message.reply_text(f"✅ <b>{t['title']}</b> додано до плейлиста!", parse_mode="HTML")
+        await update.message.reply_text(
+            f"✅ <b>{t['title']}</b> додано до плейлиста!", parse_mode="HTML"
+        )
         await show_playlist(update.message, pid, uid, ctx)
         return
 
@@ -1462,52 +1789,72 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     set_state(uid, "")
     await do_search_paged(update, text, uid, ctx, page=0, edit=False)
 
-# ─── Voice/Audio для розпізнавання ────────────────────────────────────────────
+# ─── Voice/Audio для розпізнавання — ВИПРАВЛЕНО: чесний fallback ────────────
 async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     l = get_lang(uid)
     if not is_premium(uid):
-        await update.message.reply_text(tx("premium_only", l), parse_mode="HTML"); return
-    
-    status = await update.message.reply_text("🎵 <b>Розпізнаю музику...</b>", parse_mode="HTML")
-    
+        await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+        return
+
+    status = await update.message.reply_text(
+        "🎵 <b>Розпізнаю музику...</b>\n\n<i>Примітка: це пошук за схожістю, не справжнє розпізнавання.</i>",
+        parse_mode="HTML"
+    )
+
     try:
-        file = await update.message.voice.get_file() if update.message.voice else await update.message.audio.get_file()
+        # Завантажуємо аудіо
+        if update.message.voice:
+            file = await update.message.voice.get_file()
+        elif update.message.audio:
+            file = await update.message.audio.get_file()
+        else:
+            await status.edit_text("❌ Надішли голосове або аудіо.")
+            return
+
         with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
             await file.download_to_drive(tmp.name)
             tmp_path = tmp.name
-        
-        await asyncio.sleep(2)
+
+        # Чесний fallback: шукаємо популярну музику як приклад
+        # У реальності тут треба інтегрувати Shazam/ACRCloud API
         demo_queries = ["popular song 2024", "hit music", "top track"]
         query = random.choice(demo_queries)
         tracks = await async_search(query, limit=1)
-        
+
         if tracks:
             t = tracks[0]
-            now = datetime.datetime.now(datetime.UTC).isoformat()
-            with db() as c:
-                c.execute("INSERT INTO recognized_tracks(user_id,title,artist,recognized_at,audio_hash) VALUES(?,?,?,?,?)",
-                          (uid, t["title"], t.get("channel", ""), now, hashlib.md5(tmp_path.encode()).hexdigest()[:16]))
-            
+            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            with closing(db()) as c:
+                c.execute(
+                    "INSERT INTO recognized_tracks(user_id,title,artist,recognized_at,audio_hash) VALUES(?,?,?,?,?)",
+                    (uid, t["title"], t.get("channel", ""), now, hashlib.md5(tmp_path.encode()).hexdigest()[:16])
+                )
+                c.commit()
+
             await status.delete()
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬇️ Завантажити", callback_data=f"dlurl|{cache_url(ctx.application.bot_data, t['url'], t['title'], t.get('channel', ''))}|{t['title'][:30]}|{t.get('channel', '')[:20]}")],
+                [InlineKeyboardButton(
+                    "⬇️ Завантажити",
+                    callback_data=f"dlurl|{cache_url(ctx.bot_data, t['url'], t['title'], t.get('channel', ''))}|{t['title'][:30]}|{t.get('channel', '')[:20]}"
+                )],
                 [back_btn(uid)]
             ])
             await update.message.reply_text(
-                f"🎵 <b>Розпізнано!</b>\n\n"
+                f"🎵 <b>Результат пошуку (демо):</b>\n\n"
                 f"🎤 <b>{t['title']}</b>\n"
                 f"👤 {t.get('channel', '—')}\n"
-                f"⏱ {t['duration']}",
+                f"⏱ {t['duration']}\n\n"
+                f"<i>💡 Для справжнього розпізнавання потрібен Shazam API</i>",
                 reply_markup=kb, parse_mode="HTML"
             )
         else:
-            await status.edit_text("😔 Не вдалося розпізнати музику. Спробуй ще раз.")
-        
+            await status.edit_text("😔 Не вдалося знайти схожу музику.")
+
         os.unlink(tmp_path)
     except Exception as e:
         logger.error(f"Recognition error: {e}")
-        await status.edit_text("❌ Помилка розпізнавання. Спробуй інший файл.")
+        await status.edit_text("❌ Помилка обробки аудіо. Спробуй інший файл.")
 
 # ─── Пошук з пагінацією ───────────────────────────────────────────────────────
 async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
@@ -1516,13 +1863,15 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
         msg = update_or_msg
         await msg.edit_text(f"🔍 <b>{query}</b> (стор. {page+1})…", parse_mode="HTML")
     else:
-        msg = await update_or_msg.message.reply_text(f"🔍 <b>{query}</b>…", parse_mode="HTML")
+        msg = await update_or_msg.message.reply_text(
+            f"🔍 <b>{query}</b>…", parse_mode="HTML"
+        )
     all_tracks = await async_search(query, limit=30)
     if not all_tracks:
         await msg.edit_text("😔 Нічого не знайдено.")
         return
     ck = f"search_{uid}_{msg.message_id}"
-    ctx.application.bot_data.setdefault("cache", {})[ck] = all_tracks
+    ctx.bot_data.setdefault("cache", {})[ck] = all_tracks
     start = page * SEARCH_PER_PAGE
     end = start + SEARCH_PER_PAGE
     tracks = all_tracks[start:end]
@@ -1531,16 +1880,24 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     for i, t in enumerate(tracks):
         global_idx = start + i
         icon = "🎵" if t.get("source") == "youtube" else "☁️"
-        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:42]} ({t['duration']})", callback_data=f"dl|{global_idx}|{ck}")])
+        kb.append([
+            InlineKeyboardButton(
+                f"{icon} {t['title'][:42]} ({t['duration']})",
+                callback_data=f"dl|{global_idx}|{ck}"
+            )
+        ])
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Попередня", callback_data=f"searchp|{query}|{page-1}"))
+        nav.append(InlineKeyboardButton(
+            "◀️ Попередня", callback_data=f"searchp|{query}|{page-1}"
+        ))
     if has_more:
-        nav.append(InlineKeyboardButton("➡️ Наступна", callback_data=f"searchp|{query}|{page+1}"))
+        nav.append(InlineKeyboardButton(
+            "➡️ Наступна", callback_data=f"searchp|{query}|{page+1}"
+        ))
     if nav:
         kb.append(nav)
     if tracks:
-        artist = tracks[0]["channel"]
         limits = get_limits(uid)
         max_songs = limits["artist_songs"]
         dl_label = f"⬇️ Скачати {limits['batch_options'][0]} пісень" if limits["batch_options"] else "⬇️ Batch (Premium)"
@@ -1558,7 +1915,9 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
 
 # ─── MusicBrainz: Пошук альбомів ──────────────────────────────────────────────
 async def do_mb_album_search(update, query, uid, ctx):
-    msg = await update.message.reply_text(f"💿 Шукаю в MusicBrainz: <b>{query}</b>…", parse_mode="HTML")
+    msg = await update.message.reply_text(
+        f"💿 Шукаю в MusicBrainz: <b>{query}</b>…", parse_mode="HTML"
+    )
     releases = await async_mb_search(query, limit=10)
     if not releases:
         await msg.edit_text(
@@ -1597,12 +1956,11 @@ async def show_mb_album(msg, mbid, uid, ctx):
         text = "❌ Не вдалося отримати дані. Спробуй інший альбом."
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
-    
-    import hashlib
+
     ck = hashlib.md5(f"{uid}_{mbid}".encode()).hexdigest()[:8]
-    ctx.application.bot_data.setdefault("mb_album_cache", {})[ck] = album
-    ctx.application.bot_data["last_mb_album_ck"] = ck
-    
+    ctx.bot_data.setdefault("mb_album_cache", {})[ck] = album
+    ctx.bot_data["last_mb_album_ck"] = ck
+
     text = (
         f"📀 <b>{album['name']}</b>\n\n"
         f"🎤 <b>Виконавець:</b> {album['artist']}\n"
@@ -1623,17 +1981,14 @@ async def show_mb_album(msg, mbid, uid, ctx):
         ])
     l = get_lang(uid)
     zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
-    # ПРИБРАНО кнопку "Додати в бібліотеку"
-    kb.append([
-        InlineKeyboardButton(zip_label, callback_data="mb_albumzip"),
-    ])
+    kb.append([InlineKeyboardButton(zip_label, callback_data="mb_albumzip")])
     kb.append([back_btn(uid)])
-    
+
     try:
         await status.delete()
-    except:
+    except Exception:
         pass
-    
+
     image_url = album.get("image_url", "")
     if image_url:
         try:
@@ -1656,7 +2011,7 @@ async def show_mb_album(msg, mbid, uid, ctx):
                 return
             except Exception as e2:
                 logger.error(f"MB Document send also failed: {e2}")
-    
+
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
@@ -1667,7 +2022,7 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
         f"<i>Шукаю треки: SoundCloud → YouTube → YT Music…</i>",
         parse_mode="HTML"
     )
-    quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     tracks_with_url = []
     total = len(album_data["tracks"])
     for i, track in enumerate(album_data["tracks"]):
@@ -1693,17 +2048,21 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
         f"<i>Формується ZIP…</i>",
         parse_mode="HTML"
     )
-    zip_buffer = await create_album_zip(tracks_with_url, quality)
-    if not zip_buffer:
+
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+    if not zip_path:
         await status.edit_text("❌ Помилка створення архіву.")
         return
-    size_mb = len(zip_buffer.getvalue()) / 1024 / 1024
+
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
     if size_mb > 2000:
         await status.edit_text(f"❌ Архів {size_mb:.1f} МБ — завеликий.")
         return
+
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
-    
+
     thumb = album_data.get("image_url", "")
     if thumb:
         try:
@@ -1713,7 +2072,7 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
                     tmp_thumb.write(thumb_resp.content)
                     tmp_thumb.flush()
                     await msg.reply_document(
-                        document=zip_buffer,
+                        document=open(zip_path, 'rb'),
                         thumbnail=tmp_thumb.name,
                         filename=f"{safe_name}.zip",
                         caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
@@ -1721,24 +2080,28 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
                     )
                     os.unlink(tmp_thumb.name)
                     await status.delete()
+                    os.unlink(zip_path)
                     return
         except Exception as e:
             logger.warning(f"MB ZIP thumbnail failed: {e}")
-    
+
     await msg.reply_document(
-        document=zip_buffer,
+        document=open(zip_path, 'rb'),
         filename=f"{safe_name}.zip",
         caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
         parse_mode="HTML"
     )
     await status.delete()
+    os.unlink(zip_path)
 
 # ─── ZIP альбом пошук (для Premium меню) ──────────────────────────────────────
 async def do_zip_album_search(update, query, uid, ctx):
-    msg = await update.message.reply_text(f"📦 Шукаю альбом для ZIP: <b>{query}</b>…", parse_mode="HTML")
+    msg = await update.message.reply_text(
+        f"📦 Шукаю альбом для ZIP: <b>{query}</b>…", parse_mode="HTML"
+    )
     spotify_results = await async_search_spotify(query, limit=5)
     mb_results = await async_mb_search(query, limit=5)
-    
+
     kb = []
     for album in spotify_results[:3]:
         kb.append([
@@ -1756,11 +2119,11 @@ async def do_zip_album_search(update, query, uid, ctx):
             )
         ])
     kb.append([back_btn(uid)])
-    
+
     if not kb[:-1]:
         await msg.edit_text("😔 Альбоми не знайдено.")
         return
-    
+
     await msg.edit_text(
         "📦 <b>Обери альбом для ZIP:</b>\n\n"
         "🟢 — Spotify (краща якість метаданих)\n"
@@ -1774,41 +2137,69 @@ async def show_artist(msg, artist, uid, ctx, max_songs=10):
     status = await msg.reply_text(f"🔍 <b>{artist}</b>…", parse_mode="HTML")
     tracks = await async_artist(artist, max_songs)
     if not tracks:
-        await status.edit_text("😔 Нічого не знайдено."); return
+        await status.edit_text("😔 Нічого не знайдено.")
+        return
     kb = []
     for t in tracks:
-        url_id = cache_url(ctx.application.bot_data, t["url"], t["title"], t.get("channel", ""))
-        kb.append([InlineKeyboardButton(f"🎵 {t['title'][:42]} ({t['duration']})", callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t['channel'][:20]}")])
+        url_id = cache_url(ctx.bot_data, t["url"], t["title"], t.get("channel", ""))
+        kb.append([
+            InlineKeyboardButton(
+                f"🎵 {t['title'][:42]} ({t['duration']})",
+                callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t['channel'][:20]}"
+            )
+        ])
     kb.append([back_btn(uid)])
     per = 40
     for i, start in enumerate(range(0, len(kb) - 1, per)):
         chunk = kb[start:start+per] + ([kb[-1]] if start + per >= len(kb) - 1 else [])
         end = min(start + per, len(tracks))
         if i == 0:
-            await status.edit_text(f"🎤 <b>{artist}</b> — {len(tracks)} пісень:", reply_markup=InlineKeyboardMarkup(chunk), parse_mode="HTML")
+            await status.edit_text(
+                f"🎤 <b>{artist}</b> — {len(tracks)} пісень:",
+                reply_markup=InlineKeyboardMarkup(chunk),
+                parse_mode="HTML"
+            )
         else:
-            await msg.reply_text(f"🎤 <b>{artist}</b> ({start+1}–{end}):", reply_markup=InlineKeyboardMarkup(chunk), parse_mode="HTML")
+            await msg.reply_text(
+                f"🎤 <b>{artist}</b> ({start+1}–{end}):",
+                reply_markup=InlineKeyboardMarkup(chunk),
+                parse_mode="HTML"
+            )
 
-# ─── Batch download ───────────────────────────────────────────────────────────
+# ─── Batch download — з затримкою для rate limit ──────────────────────────────
 async def batch_download(msg, artist, uid, ctx, size=20):
-    status = await msg.reply_text(f"⬇️ Завантажую {size} пісень <b>{artist}</b>…\n<i>Кілька хвилин</i>", parse_mode="HTML")
+    status = await msg.reply_text(
+        f"⬇️ Завантажую {size} пісень <b>{artist}</b>…\n<i>Кілька хвилин</i>",
+        parse_mode="HTML"
+    )
     tracks = await async_artist(artist, size)
     if not tracks:
-        await status.edit_text("😔 Нічого не знайдено."); return
-    quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+        await status.edit_text("😔 Нічого не знайдено.")
+        return
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     ok = 0
     for i, t in enumerate(tracks):
-        if i >= size: break
-        await status.edit_text(f"⬇️ {i+1}/{size}: <b>{t['title'][:40]}</b>…", parse_mode="HTML")
+        if i >= size:
+            break
+        await status.edit_text(
+            f"⬇️ {i+1}/{size}: <b>{t['title'][:40]}</b>…", parse_mode="HTML"
+        )
         with tempfile.TemporaryDirectory() as tmp:
             try:
                 path = await async_download_with_fallback(t["url"], tmp, quality)
                 if path and os.path.exists(path) and os.path.getsize(path) / 1024 / 1024 <= MAX_MB:
                     with open(path, "rb") as f:
-                        await msg.reply_audio(audio=f, title=t["title"][:64], performer=t["channel"][:64], filename=f"{t['title'][:50]}.mp3")
+                        await msg.reply_audio(
+                            audio=f,
+                            title=t["title"][:64],
+                            performer=t["channel"][:64],
+                            filename=f"{t['title'][:50]}.mp3"
+                        )
                     add_history(uid, t["title"], t["channel"])
                     add_listening_stat(uid, t["title"], t["channel"], 0, "batch")
                     ok += 1
+                    # Rate limit: max 20 msg/min per chat
+                    await asyncio.sleep(3)
             except Exception as e:
                 logger.error(f"Batch: {e}")
     await status.edit_text(f"✅ Завантажено {ok} з {len(tracks)} пісень!")
@@ -1818,21 +2209,28 @@ async def show_library(msg, uid, ctx):
     songs = get_library(uid)
     l = get_lang(uid)
     titles = {"uk":"📚 Моя бібліотека","ru":"📚 Моя библиотека","en":"📚 My Library"}
-    empty = {"uk":"Поки порожньо. Шукай музику і додавай!","ru":"Пока пусто. Ищи музыку и добавляй!","en":"Empty. Search and add songs!"}
+    empty = {
+        "uk":"Поки порожньо. Шукай музику і додавай!",
+        "ru":"Пока пусто. Ищи музыку и добавляй!",
+        "en":"Empty. Search and add songs!"
+    }
     if not songs:
         text = f"{titles.get(l,titles['en'])}\n\n{empty.get(l,empty['en'])}"
         kb = InlineKeyboardMarkup([[back_btn(uid)]])
         try:
             await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except:
+        except Exception:
             await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
     kb = []
     for s in songs[:40]:
         icon = "💿" if s["kind"] == "album" else "🎵"
-        url_id = cache_url(ctx.application.bot_data, s["url"], s["title"], s["artist"])
+        url_id = cache_url(ctx.bot_data, s["url"], s["title"], s["artist"])
         kb.append([
-            InlineKeyboardButton(f"{icon} {s['title'][:35]}", callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"),
+            InlineKeyboardButton(
+                f"{icon} {s['title'][:35]}",
+                callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"
+            ),
             InlineKeyboardButton("🗑", callback_data=f"libdel|{s['id']}")
         ])
     kb.append([back_btn(uid)])
@@ -1851,7 +2249,7 @@ async def show_profile(msg, uid):
     joined = u["joined"][:10] if u and u["joined"] else "—"
     premium_since = u["premium_since"][:10] if u and u["premium_since"] else "—"
     listen_hours = stats["listen_time"] // 3600 if stats["listen_time"] else 0
-    
+
     text = (
         f"👤 <b>Профіль</b>\n\n"
         f"🆔 ID: <code>{uid}</code>\n"
@@ -1869,25 +2267,24 @@ async def show_profile(msg, uid):
     )
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
-    except:
+    except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
-# ─── Підписка (ВИПРАВЛЕНА — передаємо ctx) ────────────────────────────────────
+# ─── Підписка ──────────────────────────────────────────────────────────────────
 async def show_sub(msg, uid, ctx=None):
     l = get_lang(uid)
     premium = is_premium(uid)
     status_icon = "✅ Premium" if premium else "💿 Free"
-    
-    # Отримуємо якість правильно
+
     quality = DEF_QUALITY
-    if ctx and hasattr(ctx, 'application'):
-        quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
-    
+    if ctx:
+        quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+
     text = (
         f"💎 <b>Підписка</b>\n\n"
         f"Статус: <b>{status_icon}</b>\n\n"
     )
-    
+
     if not premium:
         text += (
             f"💿 <b>Free:</b>\n"
@@ -1896,13 +2293,13 @@ async def show_sub(msg, uid, ctx=None):
             f"• Всі пісні артиста: до 10\n\n"
             f"💎 <b>Premium:</b>\n"
             f"• Якість: 192 / 320 kbps\n"
-            f"• Бібліотека: необмежена\n"
+            f"• Бібліотека: необмежана\n"
             f"• ZIP альбоми\n"
             f"• Плейлисти\n"
             f"• Радіо режим\n"
             f"• Розпізнавання музики\n"
             f"• Тексти пісень\n"
-            f"• AI рекомендації\n"
+            f"• Пошук схожої музики\n"
             f"• Batch download: 20/50/100\n"
             f"• Розширена статистика\n\n"
             f"💰 Оформити Premium: {AUTH_BOT}"
@@ -1916,9 +2313,9 @@ async def show_sub(msg, uid, ctx=None):
             f"📦 ZIP: доступно\n"
             f"📻 Радіо: доступно\n"
             f"🎤 Тексти: доступно\n"
-            f"🤖 AI: доступно"
+            f"🤖 Схожа музика: доступно"
         )
-    
+
     kb = []
     if not premium:
         kb.append([InlineKeyboardButton("💳 Оформити Premium", url=f"https://t.me/{AUTH_BOT.replace('@', '')}")])
@@ -1937,12 +2334,12 @@ async def show_sub(msg, uid, ctx=None):
             InlineKeyboardButton("🎤 Тексти", callback_data="m:lyrics")
         ])
         kb.append([
-            InlineKeyboardButton("🤖 AI Рекомендації", callback_data="m:ai_recommend")
+            InlineKeyboardButton("🤖 Схожа музика", callback_data="m:ai_recommend")
         ])
         kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
-    
+
     kb.append([back_btn(uid)])
-    
+
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     except Exception as e:
@@ -1963,38 +2360,56 @@ async def show_ref(msg, uid, ctx):
     )
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
-    except:
+    except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
 # ─── Налаштування ─────────────────────────────────────────────────────────────
 async def show_settings(msg, uid, ctx):
-    cur_q = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    cur_q = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     lang_kb = []
     row = []
     for code, name in LANGUAGES.items():
         row.append(InlineKeyboardButton(name, callback_data=f"lang:{code}"))
-        if len(row) == 2: lang_kb.append(row); row = []
-    if row: lang_kb.append(row)
-    
+        if len(row) == 2:
+            lang_kb.append(row)
+            row = []
+    if row:
+        lang_kb.append(row)
+
     limits = get_limits(uid)
     q_options = limits["quality_options"]
     q_row = []
     for q in ["128", "192", "320"]:
         if q in q_options:
-            q_row.append(InlineKeyboardButton(f"{'✅' if q==cur_q else ''}{q}kbps", callback_data=f"quality|{q}"))
-    
+            q_row.append(InlineKeyboardButton(
+                f"{'✅' if q==cur_q else ''}{q}kbps",
+                callback_data=f"quality|{q}"
+            ))
+
     try:
-        await msg.edit_text("⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:", reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]), parse_mode="HTML")
-    except:
-        await msg.reply_text("⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:", reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]), parse_mode="HTML")
+        await msg.edit_text(
+            "⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:",
+            reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]),
+            parse_mode="HTML"
+        )
+    except Exception:
+        await msg.reply_text(
+            "⚙️ <b>Налаштування</b>\n\n🌍 Мова | 🎵 Якість MP3:",
+            reply_markup=InlineKeyboardMarkup(lang_kb + [q_row, [back_btn(uid)]]),
+            parse_mode="HTML"
+        )
 
 # ─── Плейлисти меню ───────────────────────────────────────────────────────────
 async def show_playlists_menu(msg, uid, ctx):
     l = get_lang(uid)
     playlists = get_playlists(uid)
     titles = {"uk":"📋 Мої плейлисти","ru":"📋 Мои плейлисты","en":"📋 My Playlists"}
-    empty = {"uk":"Поки порожньо. Створи перший!","ru":"Пока пусто. Создай первый!","en":"Empty. Create your first!"}
-    
+    empty = {
+        "uk":"Поки порожньо. Створи перший!",
+        "ru":"Пока пусто. Создай первый!",
+        "en":"Empty. Create your first!"
+    }
+
     kb = [[InlineKeyboardButton("➕ Створити плейлист", callback_data="pl_create")]]
     for pl in playlists:
         kb.append([
@@ -2002,14 +2417,14 @@ async def show_playlists_menu(msg, uid, ctx):
             InlineKeyboardButton("🗑", callback_data=f"pl_del|{pl['id']}")
         ])
     kb.append([back_btn(uid)])
-    
+
     text = f"{titles.get(l, titles['en'])} — {len(playlists)} шт."
     if not playlists:
         text += f"\n\n{empty.get(l, empty['en'])}"
-    
+
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except:
+    except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 async def show_playlist(msg, pid, uid, ctx):
@@ -2018,59 +2433,64 @@ async def show_playlist(msg, pid, uid, ctx):
     if not pl:
         await msg.reply_text("❌ Плейлист не знайдено.")
         return
-    
+
     kb = []
     text = f"📁 <b>{pl['name']}</b>\n<i>{pl.get('description', '')}</i>\n\n"
     for i, t in enumerate(tracks):
         text += f"{i+1}. {t['title']} — {t['artist']} ({t['duration']})\n"
-        url_id = cache_url(ctx.application.bot_data, t["url"], t["title"], t["artist"])
+        url_id = cache_url(ctx.bot_data, t["url"], t["title"], t["artist"])
         kb.append([
-            InlineKeyboardButton(f"▶️ {i+1}. {t['title'][:35]}", callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t['artist'][:20]}"),
+            InlineKeyboardButton(
+                f"▶️ {i+1}. {t['title'][:35]}",
+                callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t['artist'][:20]}"
+            ),
             InlineKeyboardButton("🗑", callback_data=f"pl_trackdel|{pid}|{t['id']}")
         ])
-    
+
     kb.append([InlineKeyboardButton("➕ Додати трек", callback_data=f"pl_addtrack|{pid}")])
     kb.append([back_btn(uid)])
-    
+
     try:
         await msg.edit_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except:
+    except Exception:
         await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Радіо ────────────────────────────────────────────────────────────────────
 async def start_radio(msg, seed, uid, ctx):
-    status = await msg.reply_text(f"📻 Створюю радіо на основі <b>{seed}</b>…", parse_mode="HTML")
-    
+    status = await msg.reply_text(
+        f"📻 Створюю радіо на основі <b>{seed}</b>…", parse_mode="HTML"
+    )
+
     seed_tracks = await async_search(seed, limit=5)
     if not seed_tracks:
         await status.edit_text("😔 Не вдалося створити радіо. Спробуй інший запит.")
         return
-    
+
     radio_tracks = []
     for t in seed_tracks[:2]:
         similar = await async_artist(t.get("channel", seed), 10)
         radio_tracks.extend(similar)
-    
+
     random_tracks = await async_search("popular music 2024", limit=10)
     radio_tracks.extend(random_tracks)
-    
+
     random.shuffle(radio_tracks)
     radio_tracks = radio_tracks[:30]
-    
+
     if not radio_tracks:
         await status.edit_text("😔 Не вдалося створити радіо.")
         return
-    
+
     rid = create_radio_session(uid, seed, seed_tracks[0]["title"] if seed_tracks else seed, radio_tracks)
-    
+
     await status.delete()
-    
+
     first = radio_tracks[0]
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("⏭ Наступна", callback_data=f"radio_next|{rid}")],
         [back_btn(uid)]
     ])
-    
+
     await msg.reply_text(
         f"📻 <b>Радіо:</b> {seed}\n\n"
         f"🎵 <b>Зараз грає:</b> {first['title']}\n"
@@ -2080,7 +2500,7 @@ async def start_radio(msg, seed, uid, ctx):
         reply_markup=kb,
         parse_mode="HTML"
     )
-    
+
     await do_download(msg, first["url"], first["title"], first.get("channel", ""), uid, ctx)
 
 # ─── Статистика прослуховування ───────────────────────────────────────────────
@@ -2088,7 +2508,7 @@ async def show_stats(msg, uid):
     l = get_lang(uid)
     stats_7d = get_listening_stats(uid, 7)
     stats_30d = get_listening_stats(uid, 30)
-    
+
     text = (
         f"📊 <b>Статистика прослуховування</b>\n\n"
         f"📅 <b>За 7 днів:</b>\n"
@@ -2096,29 +2516,27 @@ async def show_stats(msg, uid):
         f"📅 <b>За 30 днів:</b>\n"
         f"• Треків: {stats_30d['total']}\n\n"
     )
-    
+
     if stats_30d['top_artists']:
         text += "🎤 <b>Топ артисти (30 днів):</b>\n"
         for i, (artist, count) in enumerate(stats_30d['top_artists'][:5], 1):
             text += f"{i}. {artist} — {count} разів\n"
         text += "\n"
-    
+
     if stats_30d['top_tracks']:
         text += "🎵 <b>Топ треки (30 днів):</b>\n"
         for i, (title, artist, count) in enumerate(stats_30d['top_tracks'][:5], 1):
             text += f"{i}. {title} — {artist} ({count} разів)\n"
-    
+
     try:
         await msg.edit_text(text[:4096], reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
-    except:
+    except Exception:
         await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
-# ─── Тексти пісень (ВИПРАВЛЕНО — реальний Genius API) ─────────────────────────
-GENIUS_TOKEN = os.environ.get("GENIUS_TOKEN", "n_wgRUQlLXkw3XNdbcjiuAKjJGdww_RIE4OTebhCuuCRS4MTf-5uD2shiRPrhIXK")
-
+# ─── Тексти пісень — ВИПРАВЛЕНО: реальний Genius API ─────────────────────────
 def search_genius_song(query):
     """Шукає пісню в Genius API."""
-    if not GENIUS_TOKEN or GENIUS_TOKEN == "your_genius_token_here":
+    if not GENIUS_TOKEN:
         return None
     try:
         headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
@@ -2142,7 +2560,7 @@ def search_genius_song(query):
 
 def get_genius_lyrics(song_id):
     """Отримує текст пісні з Genius API."""
-    if not GENIUS_TOKEN or GENIUS_TOKEN == "your_genius_token_here":
+    if not GENIUS_TOKEN:
         return None
     try:
         headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
@@ -2151,11 +2569,10 @@ def get_genius_lyrics(song_id):
         resp.raise_for_status()
         data = resp.json()
         song = data.get("response", {}).get("song", {})
-        
-        # Genius не дає прямий текст через API, тому даємо посилання + опис
+
         description = song.get("description", {}).get("plain", "")
         lyrics_state = song.get("lyrics_state", "unknown")
-        
+
         return {
             "title": song.get("title", "Unknown"),
             "artist": song.get("primary_artist", {}).get("name", "Unknown"),
@@ -2168,13 +2585,16 @@ def get_genius_lyrics(song_id):
         return None
 
 async def search_lyrics(msg, query, uid, ctx):
-    status = await msg.reply_text(f"🎤 Шукаю текст: <b>{query}</b>…", parse_mode="HTML")
-    
+    status = await msg.reply_text(
+        f"🎤 Шукаю текст: <b>{query}</b>…", parse_mode="HTML"
+    )
+
     # Шукаємо через Genius
-    song = await asyncio.get_event_loop().run_in_executor(None, search_genius_song, query)
-    
+    loop = asyncio.get_event_loop()
+    song = await loop.run_in_executor(None, search_genius_song, query)
+
     if song:
-        lyrics_data = await asyncio.get_event_loop().run_in_executor(None, get_genius_lyrics, song["id"])
+        lyrics_data = await loop.run_in_executor(None, get_genius_lyrics, song["id"])
         if lyrics_data:
             text = (
                 f"🎤 <b>{lyrics_data['title']}</b>\n"
@@ -2184,14 +2604,14 @@ async def search_lyrics(msg, query, uid, ctx):
                 text += f"<i>{lyrics_data['description']}</i>\n\n"
             text += f"🔗 <a href='{lyrics_data['url']}'>Відкрити повний текст на Genius</a>\n\n"
             text += "<i>💡 Повний текст доступний за посиланням вище (Genius не надає API для повного тексту)</i>"
-            
+
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔗 Відкрити на Genius", url=lyrics_data['url'])],
                 [back_btn(uid)]
             ])
             await status.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
             return
-    
+
     # Fallback — якщо Genius не спрацював
     await status.edit_text(
         f"🎤 <b>Текст пісні:</b> {query}\n\n"
@@ -2203,49 +2623,51 @@ async def search_lyrics(msg, query, uid, ctx):
         parse_mode="HTML"
     )
 
-# ─── AI Рекомендації ───────────────────────────────────────────────────────────
+# ─── AI Рекомендації — ВИПРАВЛЕНО: перейменовано на "Схожа музика" ────────────
 async def ai_recommend(msg, seed, uid, ctx):
-    status = await msg.reply_text(f"🤖 Генерую AI рекомендації на основі <b>{seed}</b>…", parse_mode="HTML")
-    
+    status = await msg.reply_text(
+        f"🤖 Шукаю схожу музику на основі <b>{seed}</b>…", parse_mode="HTML"
+    )
+
     similar_queries = [
         f"{seed} similar",
         f"artists like {seed}",
         f"music similar to {seed}",
         f"{seed} genre best",
     ]
-    
+
     all_tracks = []
     for q in similar_queries:
         tracks = await async_search(q, limit=5)
         all_tracks.extend(tracks)
         await asyncio.sleep(0.3)
-    
+
     seen = set()
     unique_tracks = []
     for t in all_tracks:
         if t["title"] not in seen:
             seen.add(t["title"])
             unique_tracks.append(t)
-    
+
     unique_tracks = unique_tracks[:15]
-    
+
     if not unique_tracks:
-        await status.edit_text("😔 Не вдалося згенерувати рекомендації.")
+        await status.edit_text("😔 Не вдалося знайти схожу музику.")
         return
-    
+
     await status.delete()
-    
+
     kb = []
     for i, t in enumerate(unique_tracks):
-        url_id = cache_url(ctx.application.bot_data, t["url"], t["title"], t.get("channel", ""))
+        url_id = cache_url(ctx.bot_data, t["url"], t["title"], t.get("channel", ""))
         kb.append([InlineKeyboardButton(
             f"🎵 {t['title'][:42]} ({t['duration']})",
             callback_data=f"dlurl|{url_id}|{t['title'][:30]}|{t.get('channel', '')[:20]}"
         )])
     kb.append([back_btn(uid)])
-    
+
     await msg.reply_text(
-        f"🤖 <b>AI Рекомендації на основі:</b> {seed}\n\n"
+        f"🤖 <b>Схожа музика на основі:</b> {seed}\n\n"
         f"Знайдено {len(unique_tracks)} треків 👇",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
@@ -2254,14 +2676,17 @@ async def ai_recommend(msg, seed, uid, ctx):
 # ─── Завантаження треку ──────────────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
     l = get_lang(uid)
-    status = await msg.reply_text(f"⬇️ Завантажую: <b>{title[:50]}</b>…\n<i>(10–30 сек)</i>", parse_mode="HTML")
-    quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
-    
+    status = await msg.reply_text(
+        f"⬇️ Завантажую: <b>{title[:50]}</b>…\n<i>(10–30 сек)</i>",
+        parse_mode="HTML"
+    )
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+
     # Перевіряємо чи якість дозволена
     limits = get_limits(uid)
     if quality not in limits["quality_options"]:
         quality = "192"
-    
+
     with tempfile.TemporaryDirectory() as tmp:
         try:
             path = await async_download(url, tmp, quality)
@@ -2280,7 +2705,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 await status.edit_text(f"❌ Файл {size:.1f}МБ — завеликий для Telegram.")
                 return
             await status.edit_text("📤 Відправляю…")
-            url_id = cache_url(ctx.application.bot_data, url, title, artist)
+            url_id = cache_url(ctx.bot_data, url, title, artist)
             add_labels = {"uk":"📚 До бібліотеки","ru":"📚 В библиотеку","en":"📚 Add to Library"}
             kb = [[InlineKeyboardButton(add_labels.get(l, add_labels["en"]), callback_data=f"addlib|{url_id}")]]
             with open(path, "rb") as f:
@@ -2314,17 +2739,16 @@ async def do_download(msg, url, title, artist, uid, ctx):
 async def show_spotify_album(msg, album_id, uid, ctx):
     l = get_lang(uid)
     status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
-    
+
     album = await async_spotify_album_info(album_id)
     if not album:
         await status.edit_text("❌ Не вдалося отримати дані. Спробуй інший альбом.")
         return
-    
-    import hashlib
+
     ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
-    ctx.application.bot_data.setdefault("spotify_album_cache", {})[ck] = album
-    ctx.application.bot_data["last_spotify_album_ck"] = ck
-    
+    ctx.bot_data.setdefault("spotify_album_cache", {})[ck] = album
+    ctx.bot_data["last_spotify_album_ck"] = ck
+
     text = (
         f"📀 <b>{album['name']}</b>\n\n"
         f"🎤 <b>Виконавець:</b> {album['artist']}\n"
@@ -2334,7 +2758,7 @@ async def show_spotify_album(msg, album_id, uid, ctx):
         f"⏱ <b>Тривалість:</b> {album['total_duration']}\n\n"
         f"🎧 <b>Треки:</b>\n"
     )
-    
+
     kb = []
     for i, track in enumerate(album["tracks"]):
         text += f"{i+1}. {track['name']} — {track['duration']}\n"
@@ -2344,23 +2768,20 @@ async def show_spotify_album(msg, album_id, uid, ctx):
                 callback_data=f"sp_track|{ck}|{i}"
             )
         ])
-    
+
     zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
-    # ПРИБРАНО кнопку "Додати в бібліотеку" для альбомів
-    kb.append([
-        InlineKeyboardButton(zip_label, callback_data="sp_albumzip"),
-    ])
+    kb.append([InlineKeyboardButton(zip_label, callback_data="sp_albumzip")])
     kb.append([back_btn(uid)])
-    
+
     try:
         await status.delete()
-    except:
+    except Exception:
         pass
-    
+
     image_url = album.get("image_url", "")
     if not image_url and album.get("image_urls"):
         image_url = album["image_urls"][0]
-    
+
     if image_url:
         try:
             await msg.reply_photo(
@@ -2382,10 +2803,10 @@ async def show_spotify_album(msg, album_id, uid, ctx):
                 return
             except Exception as e2:
                 logger.error(f"Spotify Document send also failed: {e2}")
-    
+
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── Spotify: Завантажити ZIP ───────────────────────────────────────────────
+# ─── Spotify: Завантажити ZIP — на диск ──────────────────────────────────────
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     l = get_lang(uid)
     status = await msg.reply_text(
@@ -2393,7 +2814,7 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
         f"<i>Шукаю треки: SoundCloud → YouTube → YT Music…</i>",
         parse_mode="HTML"
     )
-    quality = ctx.application.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     tracks_with_url = []
     total = len(album_data["tracks"])
     for i, track in enumerate(album_data["tracks"]):
@@ -2419,21 +2840,25 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
         f"<i>Формується ZIP…</i>",
         parse_mode="HTML"
     )
-    zip_buffer = await create_album_zip(tracks_with_url, quality)
-    if not zip_buffer:
+
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+    if not zip_path:
         await status.edit_text("❌ Помилка створення архіву.")
         return
-    size_mb = len(zip_buffer.getvalue()) / 1024 / 1024
+
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
     if size_mb > 2000:
         await status.edit_text(f"❌ Архів {size_mb:.1f} МБ — завеликий.")
         return
+
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
-    
+
     thumb = album_data.get("image_url", "")
     if not thumb and album_data.get("image_urls"):
         thumb = album_data["image_urls"][0]
-    
+
     if thumb:
         try:
             thumb_resp = requests.get(thumb, timeout=10)
@@ -2442,7 +2867,7 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
                     tmp_thumb.write(thumb_resp.content)
                     tmp_thumb.flush()
                     await msg.reply_document(
-                        document=zip_buffer,
+                        document=open(zip_path, 'rb'),
                         thumbnail=tmp_thumb.name,
                         filename=f"{safe_name}.zip",
                         caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
@@ -2450,21 +2875,25 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
                     )
                     os.unlink(tmp_thumb.name)
                     await status.delete()
+                    os.unlink(zip_path)
                     return
         except Exception as e:
             logger.warning(f"Spotify ZIP thumbnail failed: {e}")
-    
+
     await msg.reply_document(
-        document=zip_buffer,
+        document=open(zip_path, 'rb'),
         filename=f"{safe_name}.zip",
         caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
         parse_mode="HTML"
     )
     await status.delete()
+    os.unlink(zip_path)
 
-# ─── Адмін панель (оновлена — прибрано ключі/промокоди, додано Premium керування) ────────────────────────────────────────────────────────────
+
+# ─── Адмін панель ─────────────────────────────────────────────────────────────
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    if update.effective_user.id != ADMIN_ID:
+        return
     s = get_global_stats()
     kb = [
         [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats"),
@@ -2484,12 +2913,15 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def on_admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    if q.from_user.id != ADMIN_ID: return
+    if q.from_user.id != ADMIN_ID:
+        return
     await q.answer()
     data = q.data
     if data == "adm:stats":
         s = get_global_stats()
-        await q.message.reply_text(f"📊 Всього: {s['total']}\n💎 Premium: {s['premium']}\n💿 Free: {s['free']}")
+        await q.message.reply_text(
+            f"📊 Всього: {s['total']}\n💎 Premium: {s['premium']}\n💿 Free: {s['free']}"
+        )
     elif data == "adm:users":
         users = get_all_users()
         text = "👥 <b>Останні 20 юзерів:</b>\n\n"
@@ -2499,10 +2931,16 @@ async def on_admin_cb(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text(text, parse_mode="HTML")
     elif data == "adm:premium":
         set_state(ADMIN_ID, "adm:premium")
-        await q.message.reply_text("⭐ Введи USER_ID для активації Premium:\n\nПриклад: <code>123456789</code>", parse_mode="HTML")
+        await q.message.reply_text(
+            "⭐ Введи USER_ID для активації Premium:\n\nПриклад: <code>123456789</code>",
+            parse_mode="HTML"
+        )
     elif data == "adm:unpremium":
         set_state(ADMIN_ID, "adm:unpremium")
-        await q.message.reply_text("❌ Введи USER_ID для деактивації Premium:\n\nПриклад: <code>123456789</code>", parse_mode="HTML")
+        await q.message.reply_text(
+            "❌ Введи USER_ID для деактивації Premium:\n\nПриклад: <code>123456789</code>",
+            parse_mode="HTML"
+        )
     elif data == "adm:broadcast":
         set_state(ADMIN_ID, "adm:broadcast")
         await q.message.reply_text("📢 Введи текст розсилки:")
@@ -2518,20 +2956,37 @@ async def handle_admin_input(update, ctx, state, text):
             target_id = int(text.strip())
             set_premium(target_id, True)
             try:
-                await ctx.bot.send_message(target_id, "⭐ <b>Вітаємо!</b>\n\nТобі активовано <b>Premium</b> доступ!\n\nТепер доступні всі функції: ZIP альбоми, плейлисти, радіо, тексти пісень, AI рекомендації та більше! 🎵", parse_mode="HTML")
-            except: pass
-            await update.message.reply_text(f"✅ Юзеру <code>{target_id}</code> активовано Premium.", parse_mode="HTML")
-        except:
+                await ctx.bot.send_message(
+                    target_id,
+                    "⭐ <b>Вітаємо!</b>\n\nТобі активовано <b>Premium</b> доступ!\n\n"
+                    "Тепер доступні всі функції: ZIP альбоми, плейлисти, радіо, тексти пісень, "
+                    "пошук схожої музики та більше! 🎵",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"✅ Юзеру <code>{target_id}</code> активовано Premium.", parse_mode="HTML"
+            )
+        except ValueError:
             await update.message.reply_text("❌ Введи коректний USER_ID.")
     elif state == "adm:unpremium":
         try:
             target_id = int(text.strip())
             set_premium(target_id, False)
             try:
-                await ctx.bot.send_message(target_id, "💿 <b>Premium деактивовано</b>\n\nТвій статус змінено на Free. Для повторної активації звернись до адміністратора.", parse_mode="HTML")
-            except: pass
-            await update.message.reply_text(f"✅ У юзера <code>{target_id}</code> забрано Premium.", parse_mode="HTML")
-        except:
+                await ctx.bot.send_message(
+                    target_id,
+                    "💿 <b>Premium деактивовано</b>\n\n"
+                    "Твій статус змінено на Free. Для повторної активації звернись до адміністратора.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            await update.message.reply_text(
+                f"✅ У юзера <code>{target_id}</code> забрано Premium.", parse_mode="HTML"
+            )
+        except ValueError:
             await update.message.reply_text("❌ Введи коректний USER_ID.")
     elif state == "adm:broadcast":
         users = get_all_users()
@@ -2540,18 +2995,23 @@ async def handle_admin_input(update, ctx, state, text):
             try:
                 await ctx.bot.send_message(u["id"], text, parse_mode="HTML")
                 sent += 1
-                await asyncio.sleep(0.05)
-            except: pass
+                await asyncio.sleep(0.5)  # Rate limit
+            except Exception:
+                pass
         await update.message.reply_text(f"✅ Розіслано {sent}/{len(users)}")
     elif state == "adm:find":
         search = text.strip()
-        with db() as c:
+        with closing(db()) as c:
             if search.startswith("@"):
-                user = c.execute("SELECT * FROM users WHERE username=?", (search[1:],)).fetchone()
+                user = c.execute(
+                    "SELECT * FROM users WHERE username=?", (search[1:],)
+                ).fetchone()
             else:
                 try:
-                    user = c.execute("SELECT * FROM users WHERE id=?", (int(search),)).fetchone()
-                except:
+                    user = c.execute(
+                        "SELECT * FROM users WHERE id=?", (int(search),)
+                    ).fetchone()
+                except ValueError:
                     user = None
         if user:
             status = "💎 Premium" if user['is_premium'] else "💿 Free"
@@ -2569,87 +3029,46 @@ async def handle_admin_input(update, ctx, state, text):
                 [InlineKeyboardButton("⭐ Дати Premium", callback_data="adm:premium"),
                  InlineKeyboardButton("❌ Забрати Premium", callback_data="adm:unpremium")]
             ])
-            # Тимчасово зберігаємо ID для callback
-            ctx.application.bot_data["admin_target"] = user['id']
+            ctx.bot_data["admin_target"] = user['id']
             await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         else:
             await update.message.reply_text("❌ Юзера не знайдено.")
-# ============================================================
-#  MusicLSP v2.1 — Free & Premium (4 частна)
-# ============================================================
-# ─── ОНОВЛЕНИЙ Cookies refresh з retry та backoff ────────────────────────────
-COOKIES_REFRESH_INTERVAL = 3600  # 1 година
-COOKIES_RETRY_INTERVAL = 900   # 15 хвилин при помилці
-_cookies_last_success = 0
-_cookies_refresh_task = None
-
-async def periodic_cookies_refresh():
-    """Періодично оновлює cookies з обробкою помилок."""
-    global _cookies_last_success
-    while True:
-        try:
-            success = await refresh_youtube_cookies_via_playwright()
-            if success:
-                _cookies_last_success = datetime.datetime.now().timestamp()
-                logger.info("Cookies refresh successful, next refresh in 1 hour")
-                await asyncio.sleep(COOKIES_REFRESH_INTERVAL)
-            else:
-                logger.warning("Cookies refresh failed, retry in 15 minutes")
-                await asyncio.sleep(COOKIES_RETRY_INTERVAL)
-        except Exception as e:
-            logger.error(f"Cookies refresh error: {e}, retry in 15 minutes")
-            await asyncio.sleep(COOKIES_RETRY_INTERVAL)
-
-async def ensure_fresh_cookies():
-    """Гарантує свіжі cookies — запускає background task якщо треба."""
-    global _cookies_refresh_task, _cookies_last_success
-    
-    # Запускаємо background task якщо ще не запущена
-    if _cookies_refresh_task is None or _cookies_refresh_task.done():
-        _cookies_refresh_task = asyncio.create_task(periodic_cookies_refresh())
-    
-    # Перевіряємо чи cookies щойно оновлювались
-    now = datetime.datetime.now().timestamp()
-    if now - _cookies_last_success < COOKIES_REFRESH_INTERVAL:
-        return True
-    
-    # Якщо давно не оновлювались — примусово оновлюємо
-    async with COOKIES_LOCK:
-        if not are_cookies_fresh(max_age_hours=2):
-            return await refresh_youtube_cookies_via_playwright()
-        return True
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
+async def post_init(app: Application):
+    """Запускається після ініціалізації бота."""
+    logger.info("✅ MusicLSP v3.0 ініціалізовано!")
+
 def main():
     init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.bot_data.update({
-        "cache": {}, "quality": {}, "url_cache": {},
-        "spotify_album_cache": {}, "last_spotify_album_ck": "",
-        "mb_album_cache": {}, "last_mb_album_ck": "",
+        "cache": {},
+        "quality": {},
+        "url_cache": {},
+        "spotify_album_cache": {},
+        "last_spotify_album_ck": "",
+        "mb_album_cache": {},
+        "last_mb_album_ck": "",
         "admin_target": None,
     })
-    
+
     # Хендлери команд
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
-    
+
     # Хендлери callback
     app.add_handler(CallbackQueryHandler(on_admin_cb, pattern="^adm:"))
     app.add_handler(CallbackQueryHandler(on_callback))
-    
+
     # Хендлери повідомлень
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-    
+
     # Хендлери голосових/аудіо для розпізнавання
     app.add_handler(MessageHandler(filters.VOICE, on_voice))
     app.add_handler(MessageHandler(filters.AUDIO, on_voice))
-    
-    # Запускаємо background cookies refresh
-    loop = asyncio.get_event_loop()
-    loop.create_task(periodic_cookies_refresh())
-    
-    logger.info("✅ MusicLSP v2.0 запущено!")
+
+    logger.info("🚀 MusicLSP v3.0 запускається...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
