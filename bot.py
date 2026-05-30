@@ -1,8 +1,8 @@
 # ============================================================
-#  MusicLSP v2.0 — Free & Premium (Виправлене завантаження)
+#  MusicLSP v2.1 — Free & Premium (1 частна)
 # ============================================================
 
-import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json, io, random, subprocess
+import os, logging, asyncio, tempfile, datetime, secrets, string, sqlite3, hashlib, base64, json, io, random, subprocess, re
 import static_ffmpeg
 import requests
 
@@ -30,6 +30,9 @@ SEARCH_PER_PAGE = 10
 # ─── Spotify Credentials ──────────────────────────────────────────────────────
 SPOTIFY_CLIENT_ID     = "2cc5b218e6f844a19492410846ad3079"
 SPOTIFY_CLIENT_SECRET = "65524b92c3be45fca0a564d72a09c232"
+
+# ─── Genius API Token (НОВЕ) ──────────────────────────────────────────────────
+GENIUS_TOKEN = "n_wgRUQlLXkw3XNdbcjiuAKjJGdww_RIE4OTebhCuuCRS4MTf-5uD2shiRPrhIXK"
 
 # ─── Free vs Premium Limits ───────────────────────────────────────────────────
 FREE_LIMITS = {
@@ -417,14 +420,19 @@ def update_radio_idx(rid, idx):
     now = datetime.datetime.now(datetime.UTC).isoformat()
     with db() as c:
         c.execute("UPDATE radio_sessions SET current_idx=?, updated=? WHERE id=?", (idx, now, rid))
-
-# ─── COOKIES МЕНЕДЖМЕНТ ───────────────────────────────────────────────────────
+# ============================================================
+#  MusicLSP v2.1 — Free & Premium (2 частина)
+# ============================================================
+# ─── COOKIES МЕНЕДЖМЕНТ (ВИПРАВЛЕНО: надійніший таймінг та fallback) ──────────
 COOKIES_PATH = "youtube_cookies.txt"
 COOKIES_JSON_PATH = "youtube_cookies.json"
 COOKIES_LOCK = asyncio.Lock()
+COOKIES_LAST_REFRESH = 0
+COOKIES_REFRESH_INTERVAL = 7200
+COOKIES_FORCE_REFRESH_AFTER_FAILS = 2
+_download_fail_count = 0
 
-def are_cookies_fresh(path=COOKIES_PATH, max_age_hours=4):
-    """Перевіряє чи cookies свіжі."""
+def are_cookies_fresh(path=COOKIES_PATH, max_age_hours=2):
     if not os.path.exists(path):
         return False
     mtime = datetime.datetime.fromtimestamp(os.path.getmtime(path))
@@ -432,7 +440,6 @@ def are_cookies_fresh(path=COOKIES_PATH, max_age_hours=4):
     return age < datetime.timedelta(hours=max_age_hours)
 
 def convert_cookies_json_to_netscape(json_path=COOKIES_JSON_PATH, netscape_path=COOKIES_PATH):
-    """Конвертує cookies з JSON в Netscape format."""
     if not os.path.exists(json_path):
         return False
     try:
@@ -460,7 +467,6 @@ def convert_cookies_json_to_netscape(json_path=COOKIES_JSON_PATH, netscape_path=
         return False
 
 async def refresh_youtube_cookies_via_playwright():
-    """Оновлює cookies через playwright."""
     try:
         from playwright.async_api import async_playwright
         logger.info("Starting browser for cookie refresh...")
@@ -472,7 +478,6 @@ async def refresh_youtube_cookies_via_playwright():
             page = await context.new_page()
             await page.goto("https://music.youtube.com", wait_until="domcontentloaded")
             await page.wait_for_timeout(5000)
-            # Приймаємо cookies банер
             try:
                 accept_btn = await page.wait_for_selector('button[aria-label="Accept all"]', timeout=3000)
                 if accept_btn:
@@ -485,23 +490,49 @@ async def refresh_youtube_cookies_via_playwright():
                 json.dump(cookies, f, ensure_ascii=False, indent=2)
             await browser.close()
             convert_cookies_json_to_netscape()
+            global COOKIES_LAST_REFRESH
+            COOKIES_LAST_REFRESH = datetime.datetime.now().timestamp()
             logger.info(f"Cookies refreshed: {len(cookies)} items")
             return True
     except ImportError:
-        logger.warning("playwright not installed. pip install playwright && playwright install chromium")
+        logger.warning("playwright not installed")
         return False
     except Exception as e:
         logger.error(f"Playwright error: {e}")
         return False
 
-async def ensure_fresh_cookies():
-    """Гарантує свіжі cookies."""
+async def ensure_fresh_cookies(force=False):
+    global COOKIES_LAST_REFRESH, _download_fail_count
     async with COOKIES_LOCK:
-        if not are_cookies_fresh(max_age_hours=3):
-            return await refresh_youtube_cookies_via_playwright()
+        now = datetime.datetime.now().timestamp()
+        need_refresh = force
+        if not need_refresh and not os.path.exists(COOKIES_PATH):
+            need_refresh = True
+        if not need_refresh and (now - COOKIES_LAST_REFRESH) > COOKIES_REFRESH_INTERVAL:
+            need_refresh = True
+        if not need_refresh and not are_cookies_fresh(max_age_hours=2):
+            need_refresh = True
+        if _download_fail_count >= COOKIES_FORCE_REFRESH_AFTER_FAILS:
+            logger.warning(f"Force cookie refresh after {_download_fail_count} failures")
+            need_refresh = True
+            _download_fail_count = 0
+        if need_refresh:
+            success = await refresh_youtube_cookies_via_playwright()
+            if success:
+                COOKIES_LAST_REFRESH = now
+            return success
         return True
 
-# ─── YouTube клієнти (ОНОВЛЕНІ — більше клієнтів, кращий порядок) ────────────
+def mark_download_failure():
+    global _download_fail_count
+    _download_fail_count += 1
+    logger.warning(f"Download failure #{_download_fail_count}")
+
+def reset_download_failures():
+    global _download_fail_count
+    _download_fail_count = 0
+
+# ─── YouTube клієнти ──────────────────────────────────────────────────────────
 YT_CLIENTS = [
     {"player_client": ["android_music"], "player_skip": ["webpage", "configs", "js"]},
     {"player_client": ["android_creator"], "player_skip": ["webpage", "configs", "js"]},
@@ -515,20 +546,15 @@ YT_CLIENTS = [
 def get_yt_opts(extra=None, client_idx=0):
     opts = {
         "quiet": True, "no_warnings": True, "extract_flat": True, "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-        "file_access_retries": 3,
-        "extractor_retries": 3,
+        "socket_timeout": 30, "retries": 3, "fragment_retries": 3,
+        "file_access_retries": 3, "extractor_retries": 3,
         "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "referer": "https://www.youtube.com/",
         "headers": {
             "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
+            "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
         },
         "extractor_args": {"youtube": YT_CLIENTS[client_idx]},
@@ -594,19 +620,15 @@ def artist_songs(artist, limit=50):
 
 def find_track_for_download(track_name, artist_name):
     query = f"{artist_name} {track_name}"
-    logger.info(f"Searching YouTube: {query}")
     result = yt_search(query, limit=3)
     if result:
         return {"title": result[0]["title"], "url": result[0]["url"], "source": "youtube"}
-    logger.info(f"Searching SoundCloud: {query}")
     result = sc_search(query, limit=3)
     if result:
         return {"title": result[0]["title"], "url": result[0]["url"], "source": "soundcloud"}
-    logger.info(f"Searching YT Music: {query}")
     result = yt_search(f"{query} youtube music", limit=3)
     if result:
         return {"title": result[0]["title"], "url": result[0]["url"], "source": "youtube_music"}
-    logger.warning(f"Not found: {query}")
     return None
 
 # ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
@@ -615,8 +637,7 @@ def extract_spotify_album_id(text):
     if "spotify.com/album/" in text:
         parts = text.split("album/")
         if len(parts) > 1:
-            id_part = parts[1].split("?")[0].split("/")[0]
-            return id_part
+            return parts[1].split("?")[0].split("/")[0]
     if len(text) == 22 and text.replace("-", "").replace("_", "").isalnum():
         return text
     return None
@@ -662,17 +683,14 @@ def get_spotify_album_info(album_id):
     images = album.get("images", [])
     image_url = images[0].get("url", "") if images else ""
     return {
-        "id": album_id,
-        "name": album.get("name", "Unknown Album"),
+        "id": album_id, "name": album.get("name", "Unknown Album"),
         "artist": ", ".join(a.get("name", "") for a in album.get("artists", [])),
         "release_date": album.get("release_date", "—"),
         "year": album.get("release_date", "—")[:4] if album.get("release_date") else "—",
         "total_tracks": album.get("total_tracks", len(tracks)),
-        "tracks": tracks,
-        "total_duration_ms": total_duration_ms,
+        "tracks": tracks, "total_duration_ms": total_duration_ms,
         "total_duration": fmt_dur_ms(total_duration_ms),
-        "label": album.get("label", "—"),
-        "image_url": image_url,
+        "label": album.get("label", "—"), "image_url": image_url,
         "album_type": album.get("album_type", "album"),
         "external_url": album.get("external_urls", {}).get("spotify", f"https://open.spotify.com/album/{album_id}"),
     }
@@ -684,13 +702,11 @@ def search_spotify_and_format(query, limit=10):
         images = album.get("images", [])
         image_url = images[0].get("url", "") if images else ""
         results.append({
-            "id": album.get("id", ""),
-            "name": album.get("name", "Unknown"),
+            "id": album.get("id", ""), "name": album.get("name", "Unknown"),
             "artist": ", ".join(a.get("name", "") for a in album.get("artists", [])),
             "release_date": album.get("release_date", "—"),
             "year": album.get("release_date", "—")[:4] if album.get("release_date") else "—",
-            "total_tracks": album.get("total_tracks", 0),
-            "image_url": image_url,
+            "total_tracks": album.get("total_tracks", 0), "image_url": image_url,
         })
     return results
 
@@ -732,8 +748,7 @@ def mb_get_full_album_info(mbid):
                 images = cover_data.get("images", [])
                 if images:
                     image_url = images[0].get("thumbnails", {}).get("large", 
-                              images[0].get("thumbnails", {}).get("small",
-                              images[0].get("image", "")))
+                              images[0].get("thumbnails", {}).get("small", images[0].get("image", "")))
         except: pass
     if not image_url:
         try:
@@ -744,8 +759,7 @@ def mb_get_full_album_info(mbid):
                 images = cover_data.get("images", [])
                 if images:
                     image_url = images[0].get("thumbnails", {}).get("large",
-                              images[0].get("thumbnails", {}).get("small",
-                              images[0].get("image", "")))
+                              images[0].get("thumbnails", {}).get("small", images[0].get("image", "")))
         except: pass
     tracks = []
     total_duration_ms = 0
@@ -757,8 +771,7 @@ def mb_get_full_album_info(mbid):
             tracks.append({
                 "name": recording.get("title", "Unknown"),
                 "artists": ", ".join(a.get("name", "") for a in recording.get("artist-credit", [])),
-                "duration_ms": dur_ms,
-                "duration": fmt_dur_ms(dur_ms),
+                "duration_ms": dur_ms, "duration": fmt_dur_ms(dur_ms),
                 "track_number": track.get("number", 0),
             })
     label = "—"
@@ -769,17 +782,11 @@ def mb_get_full_album_info(mbid):
     release_date = data.get("date", "—")
     year = release_date[:4] if release_date and len(release_date) >= 4 else "—"
     return {
-        "mbid": mbid,
-        "name": data.get("title", "Unknown Album"),
-        "artist": artists,
-        "release_date": release_date,
-        "year": year,
-        "total_tracks": len(tracks),
-        "tracks": tracks,
-        "total_duration_ms": total_duration_ms,
-        "total_duration": fmt_dur_ms(total_duration_ms),
-        "label": label,
-        "image_url": image_url,
+        "mbid": mbid, "name": data.get("title", "Unknown Album"),
+        "artist": artists, "release_date": release_date, "year": year,
+        "total_tracks": len(tracks), "tracks": tracks,
+        "total_duration_ms": total_duration_ms, "total_duration": fmt_dur_ms(total_duration_ms),
+        "label": label, "image_url": image_url,
         "album_type": data.get("release-group", {}).get("primary-type", "album"),
         "external_url": f"https://musicbrainz.org/release/{mbid}",
     }
@@ -792,14 +799,7 @@ def mb_format_album(release):
     track_count = 0
     for medium in release.get("media", []):
         track_count += medium.get("track-count", 0)
-    return {
-        "mbid": release.get("id", ""),
-        "name": title,
-        "artist": artists,
-        "year": year,
-        "total_tracks": track_count,
-        "release_date": date,
-    }
+    return {"mbid": release.get("id", ""), "name": title, "artist": artists, "year": year, "total_tracks": track_count, "release_date": date}
 
 # ─── Асинхронні обгортки ──────────────────────────────────────────────────────
 async def async_search(query, limit=10):
@@ -809,7 +809,6 @@ async def async_artist(artist, limit=50):
     return await asyncio.get_event_loop().run_in_executor(None, artist_songs, artist, limit)
 
 async def async_download(url, out_dir, quality="192"):
-    # Оновлюємо cookies перед завантаженням якщо потрібно
     if os.path.exists(COOKIES_PATH):
         await ensure_fresh_cookies()
     return await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
@@ -829,66 +828,43 @@ async def async_mb_full_info(mbid):
 async def async_find_track(track_name, artist_name):
     return await asyncio.get_event_loop().run_in_executor(None, find_track_for_download, track_name, artist_name)
 
-# ─── ОНОВЛЕНЕ Завантаження MP3 з кращою обробкою ────────────────────────────────
+# ─── Завантаження MP3 (ВИПРАВЛЕНО: інтеграція з лічильником помилок) ──────────
 def download_mp3(url, out_dir, quality="192"):
-    """
-    Завантажує MP3 з YouTube з автоматичним fallback на різні клієнти.
-    Пріоритет: android_music → android_creator → android → ios → tv → web_embedded → web
-    """
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio", 
-            "preferredcodec": "mp3", 
-            "preferredquality": quality
-        }],
-        "quiet": True, 
-        "no_warnings": True, 
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-        "file_access_retries": 3,
-        "extractor_retries": 3,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
+        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "socket_timeout": 30, "retries": 3, "fragment_retries": 3,
+        "file_access_retries": 3, "extractor_retries": 3,
         "user_agent": "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
         "referer": "https://www.youtube.com/",
         "headers": {
             "Accept-Language": "en-US,en;q=0.9,uk-UA;q=0.8",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
+            "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
         },
     }
-    
     last_error = None
     tried_clients = []
-    
     for i, client in enumerate(YT_CLIENTS):
         try:
             opts = dict(base_opts)
             opts["extractor_args"] = {"youtube": client}
-            
-            # Додаємо cookies ТІЛЬКИ для web клієнтів і ТІЛЬКИ якщо є файл
             client_name = client["player_client"][0]
             if "web" in client_name and os.path.exists(COOKIES_PATH):
                 opts["cookies"] = COOKIES_PATH
                 logger.info(f"Using cookies for {client_name}")
-            
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                
                 if info:
-                    # Шукаємо MP3 файл
                     mp3_files = list(Path(out_dir).glob("*.mp3"))
                     if mp3_files:
                         logger.info(f"Download success via {client_name}: {mp3_files[0].name}")
+                        reset_download_failures()
                         return str(mp3_files[0])
-                    
-                    # Якщо не MP3 — конвертуємо з інших форматів
                     for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
                         files = list(Path(out_dir).glob(ext))
                         if files:
@@ -902,18 +878,16 @@ def download_mp3(url, out_dir, quality="192"):
                                 ], check=True, capture_output=True, timeout=60)
                                 if os.path.exists(output_file):
                                     os.remove(input_file)
-                                    logger.info(f"Converted to MP3 via ffmpeg: {output_file}")
+                                    reset_download_failures()
                                     return output_file
                             except Exception as conv_e:
                                 logger.warning(f"FFmpeg conversion failed: {conv_e}")
                                 return input_file
-                        
         except Exception as e:
             last_error = e
             client_name = client["player_client"][0]
             tried_clients.append(client_name)
             err_str = str(e).lower()
-            
             if "sign in" in err_str or "login" in err_str:
                 logger.warning(f"{client_name}: Sign in required")
             elif "bot" in err_str or "automated" in err_str:
@@ -929,55 +903,40 @@ def download_mp3(url, out_dir, quality="192"):
             else:
                 logger.warning(f"{client_name} failed: {str(e)[:100]}")
             continue
-    
+    mark_download_failure()
     logger.error(f"All download attempts failed. Tried: {', '.join(tried_clients)}. Last error: {last_error}")
     return None
 
-# ─── Альтернативне завантаження (fallback) ─────────────────────────────────────
 def download_mp3_alternative(url, out_dir, quality="192"):
-    """
-    Альтернативний метод з іншими параметрами.
-    """
     opts = {
         "format": "ba/b",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [{
-            "key": "FFmpegExtractAudio", 
-            "preferredcodec": "mp3", 
-            "preferredquality": quality
-        }],
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
+        "quiet": True, "no_warnings": True, "noplaylist": True,
         "extract_flat": False,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
     }
-    
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info:
                 mp3_files = list(Path(out_dir).glob("*.mp3"))
                 if mp3_files:
+                    reset_download_failures()
                     return str(mp3_files[0])
     except Exception as e:
         logger.warning(f"Alternative download failed: {e}")
-    
+        mark_download_failure()
     return None
 
-# ─── Оновлена асинхронна обгортка з fallback ─────────────────────────────────
 async def async_download_with_fallback(url, out_dir, quality="192"):
-    # Спробуємо основний метод
     result = await asyncio.get_event_loop().run_in_executor(None, download_mp3, url, out_dir, quality)
     if result:
         return result
-    
-    # Fallback на альтернативний метод
     logger.info("Trying alternative download method...")
     result = await asyncio.get_event_loop().run_in_executor(None, download_mp3_alternative, url, out_dir, quality)
     if result:
         return result
-    
     return None
 
 # ─── ZIP-архів для альбому ────────────────────────────────────────────────────
@@ -1002,6 +961,9 @@ async def create_album_zip(tracks, quality="192"):
     if downloaded == 0: return None
     zip_buffer.seek(0)
     return zip_buffer
+# ============================================================
+#  MusicLSP v2.1 — Free & Premium (3 частина)
+# ============================================================
 # ─── Клавіатури ───────────────────────────────────────────────────────────────
 def main_kb(uid):
     l = get_lang(uid)
@@ -1108,7 +1070,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_settings(q.message, uid, ctx)
         return
 
-    # Premium menu — перенаправляємо на підписку
+    # Premium menu
     if data == "m:premium_menu":
         await show_sub(q.message, uid, ctx)
         return
@@ -1242,20 +1204,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download_spotify_album_zip(q.message, album_data, uid, ctx)
         return
 
-    if data.startswith("sp_addlib|"):
-        parts = data.split("|", 2)
-        album_ck = parts[1]
-        album_data = ctx.application.bot_data.get("spotify_album_cache", {}).get(album_ck)
-        if album_data:
-            first_track = album_data["tracks"][0] if album_data["tracks"] else {}
-            result = await async_find_track(first_track.get("name", ""), album_data["artist"])
-            url = result["url"] if result else album_data["external_url"]
-            added, status = add_library(uid, album_data["name"], album_data["artist"], url, kind="album")
-            if status == "full":
-                await q.answer(tx("library_full", l, max=FREE_LIMITS["library_max"]), show_alert=True)
-            else:
-                await q.answer("✅ Альбом додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
-        return
+    # ПРИБРАНО: sp_addlib — додавання альбому в бібліотеку більше не доступне
 
     if data == "artist_input":
         limits = get_limits(uid)
@@ -1347,20 +1296,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download_mb_album_zip(q.message, album_data, uid, ctx)
         return
 
-    if data.startswith("mb_addlib|"):
-        parts = data.split("|", 2)
-        album_ck = parts[1]
-        album_data = ctx.application.bot_data.get("mb_album_cache", {}).get(album_ck)
-        if album_data:
-            first_track = album_data["tracks"][0] if album_data["tracks"] else {}
-            result = await async_find_track(first_track.get("name", ""), album_data["artist"])
-            url = result["url"] if result else album_data["external_url"]
-            added, status = add_library(uid, album_data["name"], album_data["artist"], url, kind="album")
-            if status == "full":
-                await q.answer(tx("library_full", l, max=FREE_LIMITS["library_max"]), show_alert=True)
-            else:
-                await q.answer("✅ Альбом додано до бібліотеки!" if added else "ℹ️ Вже є в бібліотеці.", show_alert=True)
-        return
+    # ПРИБРАНО: mb_addlib — додавання альбому в бібліотеку більше не доступне
 
     # Playlist callbacks
     if data.startswith("pl_view|"):
@@ -1419,7 +1355,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         prompts = {"uk":f"⬇️ Введи ім'я артиста для завантаження {size} пісень:","ru":f"⬇️ Введи имя артиста для скачивания {size} песен:","en":f"⬇️ Enter artist name to download {size} songs:"}
         await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
-
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1573,6 +1508,7 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Recognition error: {e}")
         await status.edit_text("❌ Помилка розпізнавання. Спробуй інший файл.")
+
 # ─── Пошук з пагінацією ───────────────────────────────────────────────────────
 async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     l = get_lang(uid)
@@ -1687,10 +1623,9 @@ async def show_mb_album(msg, mbid, uid, ctx):
         ])
     l = get_lang(uid)
     zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
-    add_label = {"uk":"📚 Додати в бібліотеку","ru":"📚 Добавить в библиотеку","en":"📚 Add to Library"}.get(l, "📚 Add to Library")
+    # ПРИБРАНО кнопку "Додати в бібліотеку"
     kb.append([
         InlineKeyboardButton(zip_label, callback_data="mb_albumzip"),
-        InlineKeyboardButton(add_label, callback_data=f"mb_addlib|{ck}")
     ])
     kb.append([back_btn(uid)])
     
@@ -1977,7 +1912,7 @@ async def show_sub(msg, uid, ctx=None):
             f"⭐ <b>Premium активовано!</b>\n\n"
             f"Всі функції доступні 👇\n\n"
             f"🎵 Якість: {quality}kbps\n"
-            f"📚 Бібліотека: необмежена\n"
+            f"📚 Бібліотека: необмежана\n"
             f"📦 ZIP: доступно\n"
             f"📻 Радіо: доступно\n"
             f"🎤 Тексти: доступно\n"
@@ -2178,24 +2113,95 @@ async def show_stats(msg, uid):
     except:
         await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
 
-# ─── Тексти пісень ────────────────────────────────────────────────────────────
+# ─── Тексти пісень (ВИПРАВЛЕНО — реальний Genius API) ─────────────────────────
+GENIUS_TOKEN = os.environ.get("GENIUS_TOKEN", "n_wgRUQlLXkw3XNdbcjiuAKjJGdww_RIE4OTebhCuuCRS4MTf-5uD2shiRPrhIXK")
+
+def search_genius_song(query):
+    """Шукає пісню в Genius API."""
+    if not GENIUS_TOKEN or GENIUS_TOKEN == "your_genius_token_here":
+        return None
+    try:
+        headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+        url = f"https://api.genius.com/search?q={requests.utils.quote(query)}"
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        hits = data.get("response", {}).get("hits", [])
+        if hits:
+            song = hits[0]["result"]
+            return {
+                "title": song.get("title", "Unknown"),
+                "artist": song.get("primary_artist", {}).get("name", "Unknown"),
+                "url": song.get("url", ""),
+                "id": song.get("id", 0),
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Genius search error: {e}")
+        return None
+
+def get_genius_lyrics(song_id):
+    """Отримує текст пісні з Genius API."""
+    if not GENIUS_TOKEN or GENIUS_TOKEN == "your_genius_token_here":
+        return None
+    try:
+        headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+        url = f"https://api.genius.com/songs/{song_id}"
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        song = data.get("response", {}).get("song", {})
+        
+        # Genius не дає прямий текст через API, тому даємо посилання + опис
+        description = song.get("description", {}).get("plain", "")
+        lyrics_state = song.get("lyrics_state", "unknown")
+        
+        return {
+            "title": song.get("title", "Unknown"),
+            "artist": song.get("primary_artist", {}).get("name", "Unknown"),
+            "url": song.get("url", ""),
+            "description": description[:500] if description else "",
+            "lyrics_state": lyrics_state,
+        }
+    except Exception as e:
+        logger.error(f"Genius lyrics error: {e}")
+        return None
+
 async def search_lyrics(msg, query, uid, ctx):
     status = await msg.reply_text(f"🎤 Шукаю текст: <b>{query}</b>…", parse_mode="HTML")
     
-    try:
-        await asyncio.sleep(1)
-        
-        demo_lyrics = (
-            f"🎤 <b>Текст пісні:</b> {query}\n\n"
-            f"<i>[Текст недоступний у демо режимі]</i>\n\n"
-            f"💡 Для отримання реальних текстів потрібен Genius API токен.\n"
-            f"Додай GENIUS_TOKEN в змінні середовища."
-        )
-        
-        await status.edit_text(demo_lyrics, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"Lyrics error: {e}")
-        await status.edit_text("❌ Помилка пошуку тексту.")
+    # Шукаємо через Genius
+    song = await asyncio.get_event_loop().run_in_executor(None, search_genius_song, query)
+    
+    if song:
+        lyrics_data = await asyncio.get_event_loop().run_in_executor(None, get_genius_lyrics, song["id"])
+        if lyrics_data:
+            text = (
+                f"🎤 <b>{lyrics_data['title']}</b>\n"
+                f"👤 {lyrics_data['artist']}\n\n"
+            )
+            if lyrics_data['description']:
+                text += f"<i>{lyrics_data['description']}</i>\n\n"
+            text += f"🔗 <a href='{lyrics_data['url']}'>Відкрити повний текст на Genius</a>\n\n"
+            text += "<i>💡 Повний текст доступний за посиланням вище (Genius не надає API для повного тексту)</i>"
+            
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Відкрити на Genius", url=lyrics_data['url'])],
+                [back_btn(uid)]
+            ])
+            await status.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+            return
+    
+    # Fallback — якщо Genius не спрацював
+    await status.edit_text(
+        f"🎤 <b>Текст пісні:</b> {query}\n\n"
+        f"<i>Не вдалося знайти текст через Genius API.</i>\n\n"
+        f"💡 Перевір:\n"
+        f"1. Чи правильна назва пісні та артист\n"
+        f"2. Чи є пісня на Genius.com",
+        reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
+        parse_mode="HTML"
+    )
 
 # ─── AI Рекомендації ───────────────────────────────────────────────────────────
 async def ai_recommend(msg, seed, uid, ctx):
@@ -2244,6 +2250,7 @@ async def ai_recommend(msg, seed, uid, ctx):
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
+
 # ─── Завантаження треку ──────────────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
     l = get_lang(uid)
@@ -2339,10 +2346,9 @@ async def show_spotify_album(msg, album_id, uid, ctx):
         ])
     
     zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
-    add_label = {"uk":"📚 Додати в бібліотеку","ru":"📚 Добавить в библиотеку","en":"📚 Add to Library"}.get(l, "📚 Add to Library")
+    # ПРИБРАНО кнопку "Додати в бібліотеку" для альбомів
     kb.append([
         InlineKeyboardButton(zip_label, callback_data="sp_albumzip"),
-        InlineKeyboardButton(add_label, callback_data=f"sp_addlib|{ck}")
     ])
     kb.append([back_btn(uid)])
     
@@ -2568,7 +2574,52 @@ async def handle_admin_input(update, ctx, state, text):
             await update.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         else:
             await update.message.reply_text("❌ Юзера не знайдено.")
-    # ─── Main ─────────────────────────────────────────────────────────────────────
+# ============================================================
+#  MusicLSP v2.1 — Free & Premium (4 частна)
+# ============================================================
+# ─── ОНОВЛЕНИЙ Cookies refresh з retry та backoff ────────────────────────────
+COOKIES_REFRESH_INTERVAL = 3600  # 1 година
+COOKIES_RETRY_INTERVAL = 900   # 15 хвилин при помилці
+_cookies_last_success = 0
+_cookies_refresh_task = None
+
+async def periodic_cookies_refresh():
+    """Періодично оновлює cookies з обробкою помилок."""
+    global _cookies_last_success
+    while True:
+        try:
+            success = await refresh_youtube_cookies_via_playwright()
+            if success:
+                _cookies_last_success = datetime.datetime.now().timestamp()
+                logger.info("Cookies refresh successful, next refresh in 1 hour")
+                await asyncio.sleep(COOKIES_REFRESH_INTERVAL)
+            else:
+                logger.warning("Cookies refresh failed, retry in 15 minutes")
+                await asyncio.sleep(COOKIES_RETRY_INTERVAL)
+        except Exception as e:
+            logger.error(f"Cookies refresh error: {e}, retry in 15 minutes")
+            await asyncio.sleep(COOKIES_RETRY_INTERVAL)
+
+async def ensure_fresh_cookies():
+    """Гарантує свіжі cookies — запускає background task якщо треба."""
+    global _cookies_refresh_task, _cookies_last_success
+    
+    # Запускаємо background task якщо ще не запущена
+    if _cookies_refresh_task is None or _cookies_refresh_task.done():
+        _cookies_refresh_task = asyncio.create_task(periodic_cookies_refresh())
+    
+    # Перевіряємо чи cookies щойно оновлювались
+    now = datetime.datetime.now().timestamp()
+    if now - _cookies_last_success < COOKIES_REFRESH_INTERVAL:
+        return True
+    
+    # Якщо давно не оновлювались — примусово оновлюємо
+    async with COOKIES_LOCK:
+        if not are_cookies_fresh(max_age_hours=2):
+            return await refresh_youtube_cookies_via_playwright()
+        return True
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     init_db()
     app = Application.builder().token(BOT_TOKEN).build()
@@ -2593,6 +2644,10 @@ def main():
     # Хендлери голосових/аудіо для розпізнавання
     app.add_handler(MessageHandler(filters.VOICE, on_voice))
     app.add_handler(MessageHandler(filters.AUDIO, on_voice))
+    
+    # Запускаємо background cookies refresh
+    loop = asyncio.get_event_loop()
+    loop.create_task(periodic_cookies_refresh())
     
     logger.info("✅ MusicLSP v2.0 запущено!")
     app.run_polling(drop_pending_updates=True)
