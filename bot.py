@@ -51,6 +51,24 @@ BOT_NAME = "MusicLSP"
 AUTH_BOT = "@MusicLSPauth_bot"
 SEARCH_PER_PAGE = 10
 
+# ─── PO Token / Cookies для YouTube (обов'язково з 2026!) ─────────────────────
+# YouTube блокує всі запити без PO Token або валідних cookies
+# 
+# Спосіб 1 (простий): Завантаж cookies.txt через розширення браузера
+#   - Встанови "Get cookies.txt LOCALLY" в Chrome/Firefox
+#   - Зайди на YouTube, натисни розширення → Export
+#   - Завантаж файл як youtube_cookies.txt в Railway
+#   - Додай змінну: YT_COOKIES_PATH=youtube_cookies.txt
+#
+# Спосіб 2 (PO Token): Вручну з DevTools
+#   - F12 → Network → знайди запит player → скопіюй poToken
+#   - Додай змінну: YT_PO_TOKEN=твій_токен
+#
+# Спосіб 3 (автоматичний): GitHub Actions (див. README)
+YT_PO_TOKEN = os.environ.get("YT_PO_TOKEN", "")
+YT_VISITOR_DATA = os.environ.get("YT_VISITOR_DATA", "")
+YT_COOKIES_PATH = os.environ.get("YT_COOKIES_PATH", "youtube_cookies.txt")
+
 # ─── Spotify Credentials (з env) ──────────────────────────────────────────────
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
@@ -558,24 +576,30 @@ def update_radio_idx(rid, idx):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Оновлені робочі клієнти (2026)
-# Актуальні клієнти yt-dlp 2026 (без cookies — найстабільніший режим)
-# За замовчуванням yt-dlp використовує android_vr,web_safari
-# Без JS runtime — тільки android_vr (працює без cookies!)
-# Документація: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#youtube
+# Актуальні клієнти yt-dlp 2026
+# YouTube тепер вимагає PO Token для всіх клієнтів!
+# Документація: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+# 
+# Пріоритет клієнтів (з cookies/PO Token → без):
+# 1. web_safari — найкраща якість, потребує PO Token
+# 2. tv_embedded — для age-restricted, іноді працює без
+# 3. android_vr — fallback, часто UNPLAYABLE
+# 4. ios_downgraded — останній шанс
 YT_CLIENTS = [
-    # Основний — android_vr, НЕ потребує cookies і працює стабільно
-    {
-        "player_client": "android_vr",
-        "player_skip": ["webpage", "configs", "js"],
-    },
-    # Fallback — web_safari (може потребувати JS runtime)
     {
         "player_client": "web_safari",
         "player_skip": ["webpage", "configs", "js"],
     },
-    # Останній fallback — tv_embedded (для age-restricted)
     {
         "player_client": "tv_embedded",
+        "player_skip": ["webpage", "configs", "js"],
+    },
+    {
+        "player_client": "android_vr",
+        "player_skip": ["webpage", "configs", "js"],
+    },
+    {
+        "player_client": "ios_downgraded",
         "player_skip": ["webpage", "configs", "js"],
     },
 ]
@@ -597,7 +621,28 @@ BASE_YTDL_OPTS = {
 
 def get_yt_opts(client_idx=0, extra=None):
     opts = dict(BASE_YTDL_OPTS)
-    opts["extractor_args"] = {"youtube": YT_CLIENTS[client_idx]}
+    client_config = dict(YT_CLIENTS[client_idx])
+
+    # Додаємо PO Token якщо є
+    # Формат: "client.gvs+TOKEN" або просто "TOKEN"
+    if YT_PO_TOKEN:
+        client_name = client_config["player_client"]
+        # Пробуємо різні формати PO Token
+        po_token_arg = f"{client_name}.gvs+{YT_PO_TOKEN}"
+        client_config["po_token"] = po_token_arg
+        logger.info(f"Using PO Token for {client_name}: {YT_PO_TOKEN[:20]}...")
+
+    # Додаємо visitor_data якщо є
+    if YT_VISITOR_DATA:
+        client_config["visitor_data"] = YT_VISITOR_DATA
+        logger.info(f"Using visitor_data: {YT_VISITOR_DATA[:20]}...")
+
+    # Додаємо cookies якщо знайшли
+    cookies = find_cookies_file()
+    if cookies:
+        opts["cookies"] = cookies
+
+    opts["extractor_args"] = {"youtube": client_config}
     if extra:
         opts.update(extra)
     return opts
@@ -971,9 +1016,12 @@ def download_mp3(url, out_dir, quality="192"):
         "fragment_retries": 3,
         "file_access_retries": 3,
         "extractor_retries": 3,
-        # НЕ додаємо user_agent, referer, headers — yt-dlp сам керує цим
-        # Це запобігає fingerprint-based блокуванню
     }
+
+    # Додаємо cookies якщо знайшли
+    cookies = find_cookies_file()
+    if cookies:
+        base_opts["cookies"] = cookies
     last_error = None
     tried_clients = []
     for i, client in enumerate(YT_CLIENTS):
@@ -2696,10 +2744,12 @@ async def do_download(msg, url, title, artist, uid, ctx):
             if not path or not os.path.exists(path):
                 await status.edit_text(
                     "❌ YouTube заблокував завантаження.\n\n"
-                    "💡 Спробуй:\n"
-                    "1. Оновити yt-dlp: <code>pip install -U yt-dlp</code>\n"
-                    "2. Спробувати іншу пісню\n"
-                    "3. Перевірити через годину",
+                    "💡 Потрібен PO Token або cookies (YouTube 2026):\n"
+                    "1. Завантаж cookies.txt через розширення браузера\n"
+                    "2. Або отримай PO Token: github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide\n"
+                    "3. Додай в Railway змінні:\n"
+                    "   <code>YT_COOKIES_PATH=youtube_cookies.txt</code>\n"
+                    "   або <code>YT_PO_TOKEN=твій_токен</code>",
                     parse_mode="HTML"
                 )
                 return
@@ -3038,13 +3088,9 @@ async def handle_admin_input(update, ctx, state, text):
             await update.message.reply_text("❌ Юзера не знайдено.")
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
-async def post_init(app: Application):
-    """Запускається після ініціалізації бота."""
-    logger.info("✅ MusicLSP v3.0 ініціалізовано!")
-
 def main():
     init_db()
-    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app = Application.builder().token(BOT_TOKEN).build()
     app.bot_data.update({
         "cache": {},
         "quality": {},
