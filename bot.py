@@ -19,6 +19,9 @@ import random
 import subprocess
 import re
 import zipfile
+import static_ffmpeg
+
+static_ffmpeg.add_paths()
 from pathlib import Path
 from contextlib import closing
 
