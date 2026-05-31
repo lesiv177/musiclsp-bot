@@ -43,7 +43,15 @@ logger = logging.getLogger(__name__)
 # ─── Конфіг ───────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("MAIN_BOT_TOKEN", "")
 ADMIN_ID = 1293055247
-DB_PATH = "musiclsp_v3.db"
+# Railway Volume для persistent storage (не видаляється при redeploy)
+# Створи Volume в Railway: Mount Path = /app/data
+RAILWAY_VOLUME_PATH = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/app/data")
+if os.path.exists(RAILWAY_VOLUME_PATH):
+    DB_PATH = os.path.join(RAILWAY_VOLUME_PATH, "musiclsp_v3.db")
+    logger.info(f"Using Railway Volume for DB: {DB_PATH}")
+else:
+    DB_PATH = "musiclsp_v3.db"
+    logger.info(f"Using local DB: {DB_PATH}")
 MAX_MB = 50
 DEF_QUALITY = "192"
 AUTHOR = "Lesiv"
@@ -278,6 +286,15 @@ def db():
     return conn
 
 def init_db():
+    # Перевіряємо чи є стара локальна БД — міграція в Volume
+    local_db = "musiclsp_v3.db"
+    if os.path.exists(local_db) and os.path.exists(RAILWAY_VOLUME_PATH):
+        volume_db = os.path.join(RAILWAY_VOLUME_PATH, "musiclsp_v3.db")
+        if not os.path.exists(volume_db):
+            import shutil
+            shutil.copy2(local_db, volume_db)
+            logger.info(f"Migrated local DB to Volume: {volume_db}")
+
     with closing(db()) as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
