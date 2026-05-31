@@ -3012,7 +3012,6 @@ def main():
 
     # Хендлери команд
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("admin", cmd_admin))
 
     # Хендлери callback
     app.add_handler(CallbackQueryHandler(on_admin_cb, pattern="^adm:"))
