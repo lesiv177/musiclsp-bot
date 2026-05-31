@@ -1,5 +1,5 @@
-python-telegram-bot==21.10
-yt-dlp
-requests
-static-ffmpeg
-psycopg2-binary
+python-telegram-bot>=20.0
+yt-dlp>=2024.12.0
+requests>=2.31.0
+psycopg2-binary>=2.9.9
+static-ffmpeg>=2.7
