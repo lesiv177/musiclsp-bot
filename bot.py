@@ -1384,6 +1384,15 @@ async def async_find_track(track_name, artist_name):
 
 # ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
+    # Знаходимо cookies файл тут (всередині функції)
+    cookies_file = None
+    if os.path.exists("youtube_cookies.txt"):
+        cookies_file = "youtube_cookies.txt"
+    elif os.path.exists("cookies.txt"):
+        cookies_file = "cookies.txt"
+    elif os.path.exists("/app/youtube_cookies.txt"):
+        cookies_file = "/app/youtube_cookies.txt"
+
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
@@ -1405,8 +1414,9 @@ def download_mp3(url, out_dir, quality="192"):
     }
 
     # Додаємо cookies для завантаження (можуть допомогти з age-restricted)
-    if COOKIES_FILE:
-        base_opts["cookies"] = COOKIES_FILE
+    if cookies_file:
+        base_opts["cookies"] = cookies_file
+        logger.info(f"Using cookies for download: {cookies_file}")
     last_error = None
     tried_clients = []
     for i, client in enumerate(YT_CLIENTS):
