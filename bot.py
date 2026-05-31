@@ -80,8 +80,48 @@ SEARCH_PER_PAGE = 10
 # ─── Deezer ARL Cookie (для повного завантаження, не обов'язково) ─────────────
 DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
 
+# Спробуємо прочитати ARL з cookies файлу (якщо є)
+DEEZER_COOKIES_FILE = "www.deezer.com_cookies.txt"
+if not DEEZER_ARL and os.path.exists(DEEZER_COOKIES_FILE):
+    try:
+        with open(DEEZER_COOKIES_FILE, 'r') as f:
+            for line in f:
+                if line.strip().startswith('.deezer.com') and '	arl	' in line:
+                    parts = line.strip().split('	')
+                    if len(parts) >= 7:
+                        DEEZER_ARL = parts[6]
+                        logger.info("✅ Deezer ARL loaded from cookies file")
+                        break
+    except Exception as e:
+        logger.warning(f"Failed to read Deezer cookies file: {e}")
+
+if DEEZER_ARL:
+    logger.info("✅ Deezer ARL configured — full track downloads enabled")
+else:
+    logger.info("⚠️ Deezer ARL not found — only 30s previews available")
+
 # ─── Spotify Credentials# ─── Deezer ARL Cookie (для повного завантаження, не обов'язково) ─────────────
 DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
+
+# Спробуємо прочитати ARL з cookies файлу (якщо є)
+DEEZER_COOKIES_FILE = "www.deezer.com_cookies.txt"
+if not DEEZER_ARL and os.path.exists(DEEZER_COOKIES_FILE):
+    try:
+        with open(DEEZER_COOKIES_FILE, 'r') as f:
+            for line in f:
+                if line.strip().startswith('.deezer.com') and '	arl	' in line:
+                    parts = line.strip().split('	')
+                    if len(parts) >= 7:
+                        DEEZER_ARL = parts[6]
+                        logger.info("✅ Deezer ARL loaded from cookies file")
+                        break
+    except Exception as e:
+        logger.warning(f"Failed to read Deezer cookies file: {e}")
+
+if DEEZER_ARL:
+    logger.info("✅ Deezer ARL configured — full track downloads enabled")
+else:
+    logger.info("⚠️ Deezer ARL not found — only 30s previews available")
 
 # ─── Spotify Credentials (з env) ──────────────────────────────────────────────
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
@@ -1741,9 +1781,13 @@ def download_mp3(url, out_dir, quality="192"):
     }
 
     # Add Deezer ARL cookie if available and URL is from Deezer
-    if DEEZER_ARL and "deezer.com" in url:
-        base_opts["cookies"] = {"arl": DEEZER_ARL}
-        logger.info("Using Deezer ARL cookie for download")
+    if "deezer.com" in url:
+        if DEEZER_ARL:
+            base_opts["cookies"] = {"arl": DEEZER_ARL}
+            logger.info("Using Deezer ARL cookie for download")
+        elif os.path.exists(DEEZER_COOKIES_FILE):
+            base_opts["cookiesfrombrowser"] = ("firefox", None, None, DEEZER_COOKIES_FILE)
+            logger.info("Using Deezer cookies file for download")
 
     try:
         with yt_dlp.YoutubeDL(base_opts) as ydl:
