@@ -2,3 +2,4 @@ python-telegram-bot==21.10
 yt-dlp
 requests
 static-ffmpeg
+psycopg2-binary
