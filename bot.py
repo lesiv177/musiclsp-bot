@@ -2861,7 +2861,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            await msg.reply_text("📚", reply_markup=kb)
+            await msg.reply_text("", reply_markup=kb)
 
         except Exception as e:
             logger.error(f"Download error: {e}")
@@ -3241,9 +3241,6 @@ async def show_sub(msg, uid, ctx=None):
         ])
         kb.append([
             InlineKeyboardButton("📊 Статистика", callback_data="m:stats"),
-            InlineKeyboardButton("🎵 Жанри", callback_data="m:genres")
-        ])
-        kb.append([
             InlineKeyboardButton("🤖 Схожа музика", callback_data="m:ai_recommend")
         ])
         kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
