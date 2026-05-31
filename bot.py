@@ -2941,9 +2941,9 @@ def scrape_genius_lyrics(url):
                 # Remove HTML tags
                 text = re.sub(r'<[^>]+>', '', match)
                 # Remove [Verse], [Chorus] etc styling
-                text = re.sub(r'\[.*?\]', lambda m: f"
+                text = re.sub(r'\[.*?\]', lambda m: "
 
-{m.group(0)}
+" + m.group(0) + "
 ", text)
                 lyrics += text + "
 
@@ -2956,9 +2956,9 @@ def scrape_genius_lyrics(url):
             lyrics = ""
             for match in alt_match:
                 text = re.sub(r'<[^>]+>', '', match)
-                text = re.sub(r'\[.*?\]', lambda m: f"
+                text = re.sub(r'\[.*?\]', lambda m: "
 
-{m.group(0)}
+" + m.group(0) + "
 ", text)
                 lyrics += text + "
 
