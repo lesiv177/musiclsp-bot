@@ -940,7 +940,14 @@ BASE_YTDL_OPTS = {
 
 def sc_search(query, limit=10):
     """Search SoundCloud - works without authentication."""
-    opts = dict(SC_OPTS)
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 3,
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
             r = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
