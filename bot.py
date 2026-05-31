@@ -2462,22 +2462,30 @@ async def do_download(msg, url, title, artist, uid, ctx):
     l = get_lang(uid)
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
-    status = await msg.reply_text("🎵", parse_mode="HTML")
+    txts = {
+        "uk": {"search": "🔍 Шукаю хіт...", "dl": "⬇️ Завантажую...", "send": "📤 Відправляю...", "done": "✅ Полетіло!", "err": "❌ Не вийшло", "big": "❌ Завеликий файл"},
+        "ru": {"search": "🔍 Ищу хит...", "dl": "⬇️ Качаю...", "send": "📤 Отправляю...", "done": "✅ Полетело!", "err": "❌ Не вышло", "big": "❌ Слишком большой"},
+        "en": {"search": "🔍 Finding banger...", "dl": "⬇️ Downloading...", "send": "📤 Sending...", "done": "✅ Here we go!", "err": "❌ Failed", "big": "❌ Too big"},
+        "fr": {"search": "🔍 Cherche le hit...", "dl": "⬇️ Télécharge...", "send": "📤 Envoie...", "done": "✅ C'est parti!", "err": "❌ Raté", "big": "❌ Trop gros"},
+    }
+    t = txts.get(l, txts["en"])
+
+    status = await msg.reply_text(t["search"], parse_mode="HTML")
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            await status.edit_text("🔥", parse_mode="HTML")
+            await status.edit_text(t["dl"], parse_mode="HTML")
             path = await async_download_with_fallback(url, tmp, quality)
             if not path or not os.path.exists(path):
-                await status.edit_text("💔")
+                await status.edit_text(t["err"])
                 return
 
             size_mb = os.path.getsize(path) / 1024 / 1024
             if size_mb > MAX_MB:
-                await status.edit_text("😤")
+                await status.edit_text(t["big"])
                 return
 
-            await status.edit_text("💿", parse_mode="HTML")
+            await status.edit_text(t["send"], parse_mode="HTML")
 
             with open(path, "rb") as f:
                 await msg.reply_audio(
@@ -2487,7 +2495,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
                     filename=f"{title[:50]}.mp3"
                 )
 
-            await status.edit_text("🚀")
+            await status.edit_text(t["done"])
             add_history(uid, title, artist)
             add_listening_stat(uid, title, artist, 0, "download")
 
@@ -2500,7 +2508,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
 
         except Exception as e:
             logger.error(f"Download error: {e}")
-            await status.edit_text("💔")
+            await status.edit_text(t["err"])
 
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     """Download Spotify album as ZIP."""
