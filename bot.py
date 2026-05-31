@@ -782,6 +782,17 @@ def get_all_users():
         else:
             return c.execute("SELECT * FROM users").fetchall()
 
+def get_recent_users(limit=20):
+    """Get last N registered users."""
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM users ORDER BY joined DESC LIMIT %s", (limit,))
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description]
+            return [dict(zip(cols, row)) for row in rows]
+        else:
+            return c.execute("SELECT * FROM users ORDER BY joined DESC LIMIT ?", (limit,)).fetchall()
+
 def get_global_stats():
     with db() as c:
         if USE_POSTGRES:
@@ -1664,6 +1675,7 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💿 Забрати Premium", callback_data="adm:unpremium")],
         [InlineKeyboardButton("📢 Розсилка", callback_data="adm:broadcast")],
         [InlineKeyboardButton("🔍 Знайти юзера", callback_data="adm:find")],
+        [InlineKeyboardButton("👥 Останні 20 юзерів", callback_data="adm:users")],
         [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
         [back_btn(uid)],
     ])
@@ -1825,6 +1837,17 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if data == "adm:find":
             set_state(uid, "adm:find")
             await q.message.edit_text("🔍 Введи ID або @username:", reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]))
+            return
+
+        if data == "adm:users":
+            recent = get_recent_users(20)
+            text = "👥 <b>Останні 20 юзерів:</b>\n\n"
+            for i, u in enumerate(recent, 1):
+                status = "💎" if u.get("is_premium") or u.get("is_premium") == 1 else "💿"
+                name = u.get("username", "—")
+                joined = str(u.get("joined", "—"))[:10]
+                text += f"{i}. {status} <code>{u['id']}</code> @{name} ({joined})\n"
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
             return
 
         if data == "adm:stats":
