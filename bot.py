@@ -28,7 +28,6 @@ import random
 import subprocess
 import re
 import zipfile
-
 from pathlib import Path
 from contextlib import closing
 
@@ -78,7 +77,7 @@ BOT_NAME = "MusicLSP"
 AUTH_BOT = "@MusicLSPauth_bot"
 SEARCH_PER_PAGE = 10
 
-# ─── Spotify Credentials (з env) ──────────────────────────────────────────────
+# ─── Spotify Credentials# ─── Spotify Credentials (з env) ──────────────────────────────────────────────
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 # Якщо не заповнені — Spotify функції не працюватимуть
@@ -212,73 +211,34 @@ def fmt_dur(s):
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
-# ─── MUSIC_GENRES (додано!) ──────────────────────────────────────────────────
+# ─── MUSIC_GENRES ────────────────────────────────────────────────────────────
 MUSIC_GENRES = {
     "uk": {
-        "pop": "🎤 Поп",
-        "rock": "🎸 Рок",
-        "hiphop": "🎧 Хіп-хоп / Реп",
-        "electronic": "🎹 Електронна",
-        "jazz": "🎷 Джаз",
-        "classical": "🎻 Класична",
-        "metal": "🤘 Метал",
-        "rnb": "💃 R&B / Соул",
-        "country": "🤠 Кантрі",
-        "folk": "🪕 Фолк",
-        "blues": "🔵 Блюз",
-        "reggae": "🌴 Реггі",
-        "latin": "💃 Латина",
-        "kpop": "🇰🇷 K-pop",
-        "indie": "🎨 Інді",
-        "punk": "🧷 Панк",
-        "disco": "🕺 Діско",
-        "funk": "🎺 Фанк",
-        "soul": "❤️ Соул",
-        "techno": "🔊 Техно / Хаус",
+        "pop": "🎤 Поп", "rock": "🎸 Рок", "hiphop": "🎧 Хіп-хоп / Реп",
+        "electronic": "🎹 Електронна", "jazz": "🎷 Джаз", "classical": "🎻 Класична",
+        "metal": "🤘 Метал", "rnb": "💃 R&B / Соул", "country": "🤠 Кантрі",
+        "folk": "🪕 Фолк", "blues": "🔵 Блюз", "reggae": "🌴 Реггі",
+        "latin": "💃 Латина", "kpop": "🇰🇷 K-pop", "indie": "🎨 Інді",
+        "punk": "🧷 Панк", "disco": "🕺 Діско", "funk": "🎺 Фанк",
+        "soul": "❤️ Соул", "techno": "🔊 Техно / Хаус",
     },
     "ru": {
-        "pop": "🎤 Поп",
-        "rock": "🎸 Рок",
-        "hiphop": "🎧 Хип-хоп / Рэп",
-        "electronic": "🎹 Электронная",
-        "jazz": "🎷 Джаз",
-        "classical": "🎻 Классическая",
-        "metal": "🤘 Метал",
-        "rnb": "💃 R&B / Соул",
-        "country": "🤠 Кантри",
-        "folk": "🪕 Фолк",
-        "blues": "🔵 Блюз",
-        "reggae": "🌴 Регги",
-        "latin": "💃 Латина",
-        "kpop": "🇰🇷 K-pop",
-        "indie": "🎨 Инди",
-        "punk": "🧷 Панк",
-        "disco": "🕺 Диско",
-        "funk": "🎺 Фанк",
-        "soul": "❤️ Соул",
-        "techno": "🔊 Техно / Хаус",
+        "pop": "🎤 Поп", "rock": "🎸 Рок", "hiphop": "🎧 Хип-хоп / Рэп",
+        "electronic": "🎹 Электронная", "jazz": "🎷 Джаз", "classical": "🎻 Классическая",
+        "metal": "🤘 Метал", "rnb": "💃 R&B / Соул", "country": "🤠 Кантри",
+        "folk": "🪕 Фолк", "blues": "🔵 Блюз", "reggae": "🌴 Регги",
+        "latin": "💃 Латина", "kpop": "🇰🇷 K-pop", "indie": "🎨 Инди",
+        "punk": "🧷 Панк", "disco": "🕺 Диско", "funk": "🎺 Фанк",
+        "soul": "❤️ Соул", "techno": "🔊 Техно / Хаус",
     },
     "en": {
-        "pop": "🎤 Pop",
-        "rock": "🎸 Rock",
-        "hiphop": "🎧 Hip-Hop / Rap",
-        "electronic": "🎹 Electronic",
-        "jazz": "🎷 Jazz",
-        "classical": "🎻 Classical",
-        "metal": "🤘 Metal",
-        "rnb": "💃 R&B / Soul",
-        "country": "🤠 Country",
-        "folk": "🪕 Folk",
-        "blues": "🔵 Blues",
-        "reggae": "🌴 Reggae",
-        "latin": "💃 Latin",
-        "kpop": "🇰🇷 K-pop",
-        "indie": "🎨 Indie",
-        "punk": "🧷 Punk",
-        "disco": "🕺 Disco",
-        "funk": "🎺 Funk",
-        "soul": "❤️ Soul",
-        "techno": "🔊 Techno / House",
+        "pop": "🎤 Pop", "rock": "🎸 Rock", "hiphop": "🎧 Hip-Hop / Rap",
+        "electronic": "🎹 Electronic", "jazz": "🎷 Jazz", "classical": "🎻 Classical",
+        "metal": "🤘 Metal", "rnb": "💃 R&B / Soul", "country": "🤠 Country",
+        "folk": "🪕 Folk", "blues": "🔵 Blues", "reggae": "🌴 Reggae",
+        "latin": "💃 Latin", "kpop": "🇰🇷 K-pop", "indie": "🎨 Indie",
+        "punk": "🧷 Punk", "disco": "🕺 Disco", "funk": "🎺 Funk",
+        "soul": "❤️ Soul", "techno": "🔊 Techno / House",
     },
 }
 
@@ -1028,11 +988,11 @@ async def handle_admin_input(update, ctx, state, text):
                 await update.message.reply_text("❌ User not found")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  YT-DLP — SOUNDCLOUD + SPOTIFY (NO YOUTUBE)
+#  YT-DLP — РОБОЧІ КЛІЄНТИ БЕЗ COOKIES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Оновлені робочі клієнти (2026)
-# Music Sources: Spotify + SoundCloud only
+# Music Sources: Spotify + SoundCloud (YouTube removed - too many issues)
 # SoundCloud works without authentication
 # Spotify requires API credentials
 
@@ -1203,8 +1163,9 @@ async def search_by_genre(msg, genre_key, uid, ctx):
 
     kb.append([back_btn(uid)])
 
+    text = f"🎵 <b>{genre_name}</b> — знайдено {len(tracks)} треків:\n\nОбери пісню 👇"
+
     try:
-        text = f"🎵 <b>{genre_name}</b> — знайдено {len(tracks)} треків:\n\nОбери пісню 👇"
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
@@ -1494,99 +1455,6 @@ def mb_format_album(release):
         "total_tracks": track_count,
         "release_date": date,
     }
-
-# ─── Пошук за жанром (Premium) ──────────────────────────────────────────────
-async def show_genres(msg, uid, ctx):
-    """Show genre selection keyboard."""
-    l = get_lang(uid)
-    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
-
-    kb = []
-    row = []
-    for key, name in genres.items():
-        row.append(InlineKeyboardButton(name, callback_data=f"genre|{key}"))
-        if len(row) == 2:
-            kb.append(row)
-            row = []
-    if row:
-        kb.append(row)
-
-    kb.append([back_btn(uid)])
-
-    text = {
-        "uk": "🎵 <b>Обери жанр:</b>",
-        "ru": "🎵 <b>Выбери жанр:</b>",
-        "en": "🎵 <b>Choose a genre:</b>",
-    }.get(l, "🎵 <b>Choose a genre:</b>")
-
-    try:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-async def search_by_genre(msg, genre_key, uid, ctx):
-    """Search popular tracks by genre."""
-    l = get_lang(uid)
-    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
-    genre_name = genres.get(genre_key, genre_key)
-
-    status = await msg.reply_text(
-        f"🔍 Шукаю <b>{genre_name}</b>…", parse_mode="HTML"
-    )
-
-    genre_queries = {
-        "pop": "popular pop music 2024",
-        "rock": "best rock music 2024",
-        "hiphop": "top hip hop rap 2024",
-        "electronic": "electronic dance music EDM 2024",
-        "jazz": "best jazz music",
-        "classical": "classical music masterpieces",
-        "metal": "heavy metal best songs",
-        "rnb": "R&B soul music 2024",
-        "country": "country music hits 2024",
-        "folk": "folk acoustic music",
-        "blues": "blues music classics",
-        "reggae": "reggae music best",
-        "latin": "latin pop reggaeton 2024",
-        "kpop": "K-pop hits 2024",
-        "indie": "indie music 2024",
-        "punk": "punk rock music",
-        "disco": "disco funk classics",
-        "funk": "funk music grooves",
-        "soul": "soul music classics",
-        "techno": "techno house music 2024",
-    }
-
-    query = genre_queries.get(genre_key, f"{genre_key} music 2024")
-    tracks = await async_search(query, limit=15)
-
-    if not tracks:
-        await status.edit_text("😔 Нічого не знайдено.")
-        return
-
-    await status.delete()
-
-    ck = f"genre_{uid}_{genre_key}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
-    ctx.bot_data.setdefault("cache", {})[ck] = tracks
-
-    kb = []
-    for i, t in enumerate(tracks[:10]):
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟢"
-        kb.append([
-            InlineKeyboardButton(
-                f"{icon} {t['title'][:40]} ({t['duration']})",
-                callback_data=f"dl|{i}|{ck}"
-            )
-        ])
-
-    kb.append([back_btn(uid)])
-
-    text = f"🎵 <b>{genre_name}</b> — знайдено {len(tracks)} треків:\n\nОбери пісню 👇"
-
-    try:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── Асинхронні обгортки ──────────────────────────────────────────────────────
 async def async_search(query, limit=10):
@@ -2612,6 +2480,55 @@ async def show_mb_album(msg, mbid, uid, ctx):
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
 
+# ─── Основна функція завантаження ────────────────────────────────────────────
+async def do_download(msg, url, title, artist, uid, ctx):
+    """Download track and send to user."""
+    l = get_lang(uid)
+    limits = get_limits(uid)
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+
+    status = await msg.reply_text(f"⬇️ Завантажую <b>{title[:50]}</b>…", parse_mode="HTML")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            path = await async_download_with_fallback(url, tmp, quality)
+            if not path or not os.path.exists(path):
+                await status.edit_text(f"❌ Не вдалося завантажити: <b>{title}</b>", parse_mode="HTML")
+                return
+
+            size_mb = os.path.getsize(path) / 1024 / 1024
+            if size_mb > MAX_MB:
+                await status.edit_text(f"❌ Файл завеликий ({size_mb:.1f} МБ, ліміт {MAX_MB} МБ)")
+                return
+
+            await status.edit_text(f"📤 Відправляю <b>{title[:50]}</b>…", parse_mode="HTML")
+
+            with open(path, "rb") as f:
+                await msg.reply_audio(
+                    audio=f,
+                    title=title[:64],
+                    performer=artist[:64],
+                    filename=f"{title[:50]}.mp3"
+                )
+
+            await status.delete()
+
+            # Add to history and stats
+            add_history(uid, title, artist)
+            add_listening_stat(uid, title, artist, 0, "download")
+
+            # Add to library button
+            url_id = cache_url(ctx.bot_data, url, title, artist)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📚 Додати в бібліотеку", callback_data=f"addlib|{url_id}")],
+                [back_btn(uid)]
+            ])
+            await msg.reply_text("✅ Готово!", reply_markup=kb)
+
+        except Exception as e:
+            logger.error(f"Download error: {e}")
+            await status.edit_text(f"❌ Помилка завантаження: {e}")
+
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     """Download Spotify album as ZIP."""
     l = get_lang(uid)
@@ -3310,25 +3227,14 @@ async def search_lyrics(msg, query, uid, ctx):
 async def ai_recommend(msg, query, uid, ctx):
     """Find similar music based on artist or genre."""
     l = get_lang(uid)
-    status = await msg.reply_text(
-        f"🤖 Шукаю схожу музику для <b>{query}</b>…", parse_mode="HTML"
-    )
-    
+    status = await msg.reply_text(f"🤖 Шукаю схожу музику для <b>{query}</b>…", parse_mode="HTML")
     seed_tracks = await async_search(query, limit=5)
     if not seed_tracks:
         await status.edit_text("😔 Не знайдено базовий трек. Спробуй інший запит.")
         return
-    
     seed_artist = seed_tracks[0].get("channel", query)
-    
     similar = await async_artist(seed_artist, limit=20)
-    
-    related_queries = [
-        f"{seed_artist} similar",
-        f"like {seed_artist}",
-        f"artists similar to {seed_artist}",
-    ]
-    
+    related_queries = [f"{seed_artist} similar", f"like {seed_artist}", f"artists similar to {seed_artist}"]
     for rq in related_queries:
         try:
             extra = await async_search(rq, limit=10)
@@ -3337,44 +3243,25 @@ async def ai_recommend(msg, query, uid, ctx):
                     similar.append(t)
         except Exception:
             pass
-    
     seen = set()
     unique = []
     for t in similar:
         if t["url"] not in seen:
             seen.add(t["url"])
             unique.append(t)
-    
     similar = unique[:20]
-    
     if not similar:
         await status.edit_text("😔 Не знайдено схожої музики.")
         return
-    
     await status.delete()
-    
     ck = f"ai_{uid}_{query}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
     ctx.bot_data.setdefault("cache", {})[ck] = similar
-    
     kb = []
     for i, t in enumerate(similar[:10]):
         icon = "🎵" if t.get("source") == "soundcloud" else "🟢"
-        kb.append([
-            InlineKeyboardButton(
-                f"{icon} {t['title'][:40]} ({t['duration']})",
-                callback_data=f"dl|{i}|{ck}"
-            )
-        ])
-    
+        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
     kb.append([back_btn(uid)])
-    
-    text = (
-        f"🤖 <b>Схожа музика для:</b> {query}\n"
-        f"🎤 <b>Базовий артист:</b> {seed_artist}\n\n"
-        f"Знайдено {len(similar)} треків:\n\n"
-        f"Обери пісню 👇"
-    )
-    
+    text = f"🤖 <b>Схожа музика для:</b> {query}\n🎤 <b>Базовий артист:</b> {seed_artist}\n\nЗнайдено {len(similar)} треків:\n\nОбери пісню 👇"
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     except Exception:
