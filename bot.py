@@ -909,6 +909,74 @@ def update_radio_idx(rid, idx):
             )
 
 
+
+async def handle_admin_input(update, ctx, state, text):
+    """Handle admin panel inputs."""
+    uid = update.effective_user.id
+    set_state(uid, "")
+
+    if state == "adm:premium":
+        try:
+            target_id = int(text.strip())
+            set_premium(target_id, True)
+            await update.message.reply_text(f"✅ Premium activated for {target_id}")
+        except ValueError:
+            await update.message.reply_text("❌ Invalid user ID")
+
+    elif state == "adm:unpremium":
+        try:
+            target_id = int(text.strip())
+            set_premium(target_id, False)
+            await update.message.reply_text(f"✅ Premium deactivated for {target_id}")
+        except ValueError:
+            await update.message.reply_text("❌ Invalid user ID")
+
+    elif state == "adm:broadcast":
+        users = get_all_users()
+        sent = 0
+        for u in users:
+            try:
+                await ctx.bot.send_message(u["id"], text, parse_mode="HTML")
+                sent += 1
+                await asyncio.sleep(0.5)
+            except Exception:
+                pass
+        await update.message.reply_text(f"✅ Broadcast sent to {sent}/{len(users)} users")
+
+    elif state == "adm:find":
+        search = text.strip()
+        with closing(db()) as c:
+            if search.startswith("@"):
+                if USE_POSTGRES:
+                    c.execute("SELECT * FROM users WHERE username = %s", (search[1:],))
+                else:
+                    c.execute("SELECT * FROM users WHERE username=?", (search[1:],))
+                row = c.fetchone()
+            else:
+                try:
+                    if USE_POSTGRES:
+                        c.execute("SELECT * FROM users WHERE id = %s", (int(search),))
+                    else:
+                        c.execute("SELECT * FROM users WHERE id=?", (int(search),))
+                    row = c.fetchone()
+                except ValueError:
+                    row = None
+
+            if row:
+                if USE_POSTGRES:
+                    cols = [desc[0] for desc in c.description]
+                    user = dict(zip(cols, row))
+                else:
+                    user = dict(row)
+
+                status = "💎 Premium" if (user.get("is_premium") or user.get("is_premium") == 1) else "💿 Free"
+                await update.message.reply_text(
+                    f"👤 User: {user['id']}\n@{user.get('username', '—')}\nStatus: {status}",
+                    parse_mode="HTML"
+                )
+            else:
+                await update.message.reply_text("❌ User not found")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  YT-DLP — РОБОЧІ КЛІЄНТИ БЕЗ COOKIES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2290,6 +2358,36 @@ async def do_mb_album_search(update, query, uid, ctx):
     )
 
 # ─── MusicBrainz: Показати альбом ─────────────────────────────────────────────
+
+async def show_spotify_album(msg, album_id, uid, ctx):
+    """Show Spotify album info."""
+    l = get_lang(uid)
+    status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
+
+    album = await async_spotify_album_info(album_id)
+    if not album:
+        await status.edit_text("❌ Не вдалося отримати дані.")
+        return
+
+    ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
+    ctx.bot_data.setdefault("spotify_album_cache", {})[ck] = album
+    ctx.bot_data["last_spotify_album_ck"] = ck
+
+    text = f"📀 <b>{album['name']}</b>\n\n🎤 {album['artist']}\n📅 {album['year']}\n🎵 {album['total_tracks']} треків"
+
+    kb = []
+    for i, track in enumerate(album["tracks"][:15]):
+        kb.append([InlineKeyboardButton(
+            f"▶️ {i+1}. {track['name'][:35]}",
+            callback_data=f"sp_track|{ck}|{i}"
+        )])
+
+    kb.append([InlineKeyboardButton("📦 ZIP", callback_data="sp_albumzip")])
+    kb.append([back_btn(uid)])
+
+    await status.delete()
+    await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 async def show_mb_album(msg, mbid, uid, ctx):
     status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
     album = await async_mb_full_info(mbid)
@@ -2356,6 +2454,55 @@ async def show_mb_album(msg, mbid, uid, ctx):
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 # ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
+
+async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
+    """Download Spotify album as ZIP."""
+    l = get_lang(uid)
+    status = await msg.reply_text("⬇️ Завантажую альбом…", parse_mode="HTML")
+
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    tracks_with_url = []
+
+    for i, track in enumerate(album_data["tracks"][:10]):
+        await status.edit_text(f"🔍 {i+1}/{len(album_data['tracks'])}: {track['name']}…", parse_mode="HTML")
+        result = await async_find_track(track["name"], track["artists"])
+        if result:
+            tracks_with_url.append({
+                "title": f"{track['artists']} — {track['name']}",
+                "url": result["url"],
+            })
+        await asyncio.sleep(0.3)
+
+    if not tracks_with_url:
+        await status.edit_text("😔 Не знайдено жодного трека.")
+        return
+
+    await status.edit_text(f"⬇️ Завантажую {len(tracks_with_url)} треків…")
+
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+
+    if not zip_path:
+        await status.edit_text("❌ Помилка створення архіву.")
+        return
+
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
+    if size_mb > 2000:
+        await status.edit_text(f"❌ Архів завеликий ({size_mb:.1f} МБ).")
+        return
+
+    await status.edit_text("📤 Відправляю ZIP…")
+    safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
+
+    await msg.reply_document(
+        document=open(zip_path, 'rb'),
+        filename=f"{safe_name}.zip",
+        caption=f"💿 {album_data['name']}\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків",
+        parse_mode="HTML"
+    )
+    await status.delete()
+    os.unlink(zip_path)
+
 async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     l = get_lang(uid)
     status = await msg.reply_text(
@@ -3014,7 +3161,6 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
 
     # Хендлери callback
-    app.add_handler(CallbackQueryHandler(on_admin_cb, pattern="^adm:"))
     app.add_handler(CallbackQueryHandler(on_callback))
 
     # Хендлери повідомлень
