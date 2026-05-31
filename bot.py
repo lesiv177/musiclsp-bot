@@ -11,6 +11,15 @@ import asyncio
 import tempfile
 import datetime
 import sqlite3
+import urllib.parse
+
+# Спробуємо підключити psycopg2 (PostgreSQL), якщо немає — використаємо SQLite
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    POSTGRES_AVAILABLE = False
 import hashlib
 import base64
 import json
@@ -43,15 +52,27 @@ logger = logging.getLogger(__name__)
 # ─── Конфіг ───────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("MAIN_BOT_TOKEN", "")
 ADMIN_ID = 1293055247
-# Railway Volume для persistent storage (не видаляється при redeploy)
-# Створи Volume в Railway: Mount Path = /app/data
-RAILWAY_VOLUME_PATH = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/app/data")
-if os.path.exists(RAILWAY_VOLUME_PATH):
-    DB_PATH = os.path.join(RAILWAY_VOLUME_PATH, "musiclsp_v3.db")
-    logger.info(f"Using Railway Volume for DB: {DB_PATH}")
-else:
+# Database: PostgreSQL (Railway/Neon) або SQLite (fallback)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+USE_POSTGRES = False
+
+if DATABASE_URL and POSTGRES_AVAILABLE:
+    try:
+        # Railway дає DATABASE_URL у форматі postgres://, psycopg2 потребує postgresql://
+        db_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        # Тестуємо підключення
+        test_conn = psycopg2.connect(db_url, sslmode='require')
+        test_conn.close()
+        USE_POSTGRES = True
+        logger.info("✅ Using PostgreSQL database")
+    except Exception as e:
+        logger.warning(f"PostgreSQL connection failed: {e}, falling back to SQLite")
+        USE_POSTGRES = False
+
+if not USE_POSTGRES:
+    # Fallback на SQLite
     DB_PATH = "musiclsp_v3.db"
-    logger.info(f"Using local DB: {DB_PATH}")
+    logger.info(f"Using SQLite: {DB_PATH}")
 MAX_MB = 50
 DEF_QUALITY = "192"
 AUTHOR = "Lesiv"
@@ -80,9 +101,11 @@ YT_COOKIES_PATH = os.environ.get("YT_COOKIES_PATH", "youtube_cookies.txt")
 # ─── Spotify Credentials (з env) ──────────────────────────────────────────────
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
+# Якщо не заповнені — Spotify функції не працюватимуть
 
 # ─── Genius API Token (з env) ─────────────────────────────────────────────────
 GENIUS_TOKEN = os.environ.get("GENIUS_TOKEN", "")
+# Якщо не заповнений — тексти пісень не працюватимуть
 
 # ─── Free vs Premium Limits ───────────────────────────────────────────────────
 FREE_LIMITS = {
@@ -281,20 +304,22 @@ def _clean_url_cache(bot_data):
 
 # ─── База даних ───────────────────────────────────────────────────────────────
 def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    if USE_POSTGRES:
+        db_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(db_url, sslmode='require')
+        return conn
+    else:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
-    # Перевіряємо чи є стара локальна БД — міграція в Volume
-    local_db = "musiclsp_v3.db"
-    if os.path.exists(local_db) and os.path.exists(RAILWAY_VOLUME_PATH):
-        volume_db = os.path.join(RAILWAY_VOLUME_PATH, "musiclsp_v3.db")
-        if not os.path.exists(volume_db):
-            import shutil
-            shutil.copy2(local_db, volume_db)
-            logger.info(f"Migrated local DB to Volume: {volume_db}")
+    if USE_POSTGRES:
+        init_postgres()
+    else:
+        init_sqlite()
 
+def init_sqlite():
     with closing(db()) as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
