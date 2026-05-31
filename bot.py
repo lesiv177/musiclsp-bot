@@ -363,7 +363,7 @@ def dz_get_artist_top(artist_name, limit=20):
     """Get top tracks by artist from Deezer."""
     try:
         encoded = urllib.parse.quote(artist_name)
-        url = f"https://api.deezer.com/search/track?q=artist:"{encoded}"&limit={limit}"
+        url = f"https://api.deezer.com/search/track?q=artist:%22{encoded}%22&limit={limit}"
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
         data = resp.json()
