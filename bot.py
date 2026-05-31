@@ -303,15 +303,75 @@ def _clean_url_cache(bot_data):
         cache.pop(h, None)
 
 # ─── База даних ───────────────────────────────────────────────────────────────
+class DBWrapper:
+    """Wrapper for both PostgreSQL and SQLite connections."""
+    def __init__(self, conn, is_postgres=False):
+        self.conn = conn
+        self.is_postgres = is_postgres
+        self._cursor = None
+
+    def __enter__(self):
+        if self.is_postgres:
+            self._cursor = self.conn.cursor()
+            return self._cursor
+        else:
+            return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.is_postgres:
+            if self._cursor:
+                self._cursor.close()
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+            self.conn.close()
+        else:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+            self.conn.close()
+
+    def execute(self, query, params=()):
+        """Execute query - works for both PostgreSQL and SQLite."""
+        if self.is_postgres:
+            cur = self.conn.cursor()
+            try:
+                # Convert ? to %s for PostgreSQL
+                pg_query = query.replace('?', '%s')
+                cur.execute(pg_query, params)
+                return cur
+            finally:
+                cur.close()
+        else:
+            return self.conn.execute(query, params)
+
+    def fetchone(self):
+        """Fetch one row."""
+        if self.is_postgres:
+            # This should be called on cursor, not connection
+            raise RuntimeError("Use cursor.fetchone() for PostgreSQL")
+        else:
+            # SQLite connection doesn't have fetchone
+            raise RuntimeError("This shouldn't be called directly")
+
+    def fetchall(self):
+        """Fetch all rows."""
+        if self.is_postgres:
+            raise RuntimeError("Use cursor.fetchall() for PostgreSQL")
+        else:
+            raise RuntimeError("This shouldn't be called directly")
+
 def db():
     if USE_POSTGRES:
         db_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
         conn = psycopg2.connect(db_url, sslmode='require')
-        return conn
+        return DBWrapper(conn, is_postgres=True)
     else:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        return conn
+        return DBWrapper(conn, is_postgres=False)
 
 def init_postgres():
     """Initialize PostgreSQL tables."""
@@ -496,48 +556,77 @@ def init_sqlite():
 
 # ── Хелпери БД ────────────────────────────────────────────────────────────────
 def get_user(uid):
-    with closing(db()) as c:
-        return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM users WHERE id = %s", (uid,))
+            row = c.fetchone()
+            if row:
+                # Convert tuple to dict-like object
+                cols = [desc[0] for desc in c.description]
+                return dict(zip(cols, row))
+            return None
+        else:
+            return c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
 
 def create_user(uid, username):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        c.execute(
-            "INSERT OR IGNORE INTO users (id, username, joined) VALUES (?, ?, ?)",
-            (uid, username, now)
-        )
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            # PostgreSQL - use ON CONFLICT
+            c.execute(
+                "INSERT INTO users (id, username, joined) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
+                (uid, username, now)
+            )
+        else:
+            c.execute(
+                "INSERT OR IGNORE INTO users (id, username, joined) VALUES (?, ?, ?)",
+                (uid, username, now)
+            )
 
 def get_lang(uid):
     u = get_user(uid)
     return u["lang"] if u else "en"
 
 def set_lang(uid, lang):
-    with closing(db()) as c:
-        c.execute("UPDATE users SET lang=? WHERE id=?", (lang, uid))
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("UPDATE users SET lang = %s WHERE id = %s", (lang, uid))
+        else:
+            c.execute("UPDATE users SET lang=? WHERE id=?", (lang, uid))
 
 def get_state(uid):
     u = get_user(uid)
     return u["state"] if u else ""
 
 def set_state(uid, state):
-    with closing(db()) as c:
-        c.execute("UPDATE users SET state=? WHERE id=?", (state, uid))
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("UPDATE users SET state = %s WHERE id = %s", (state, uid))
+        else:
+            c.execute("UPDATE users SET state=? WHERE id=?", (state, uid))
 
 def is_premium(uid):
     u = get_user(uid)
-    return bool(u and u["is_premium"])
+    if u is None:
+        return False
+    if isinstance(u, dict):
+        return bool(u.get("is_premium"))
+    else:
+        return bool(u["is_premium"])
 
 def set_premium(uid, premium=True):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat() if premium else None
-    with closing(db()) as c:
-        c.execute(
-            "UPDATE users SET is_premium=?, premium_since=? WHERE id=?",
-            (1 if premium else 0, now, uid)
-        )
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "UPDATE users SET is_premium = %s, premium_since = %s WHERE id = %s",
+                (premium, now, uid)
+            )
+        else:
+            c.execute(
+                "UPDATE users SET is_premium=?, premium_since=? WHERE id=?",
+                (1 if premium else 0, now, uid)
+            )
 
 def get_limits(uid):
     return PREMIUM_LIMITS if is_premium(uid) else FREE_LIMITS
@@ -545,172 +634,278 @@ def get_limits(uid):
 def add_library(uid, title, artist, url, kind="track"):
     limits = get_limits(uid)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        count = c.execute(
-            "SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)
-        ).fetchone()["c"]
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT COUNT(*) as c FROM library WHERE user_id = %s", (uid,))
+            count = c.fetchone()[0]
+        else:
+            count = c.execute("SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)).fetchone()["c"]
         if count >= limits["library_max"]:
             return False, "full"
-        ex = c.execute(
-            "SELECT id FROM library WHERE user_id=? AND url=?", (uid, url)
-        ).fetchone()
+        if USE_POSTGRES:
+            c.execute("SELECT id FROM library WHERE user_id = %s AND url = %s", (uid, url))
+            ex = c.fetchone()
+        else:
+            ex = c.execute("SELECT id FROM library WHERE user_id=? AND url=?", (uid, url)).fetchone()
         if not ex:
-            c.execute(
-                "INSERT INTO library(user_id, title, artist, url, kind, added) VALUES(?,?,?,?,?,?)",
-                (uid, title, artist, url, kind, now)
-            )
-            c.commit()
+            if USE_POSTGRES:
+                c.execute(
+                    "INSERT INTO library(user_id, title, artist, url, kind, added) VALUES(%s, %s, %s, %s, %s, %s)",
+                    (uid, title, artist, url, kind, now)
+                )
+            else:
+                c.execute(
+                    "INSERT INTO library(user_id, title, artist, url, kind, added) VALUES(?,?,?,?,?,?)",
+                    (uid, title, artist, url, kind, now)
+                )
             return True, "added"
     return False, "exists"
 
 def get_library(uid):
-    with closing(db()) as c:
-        return c.execute(
-            "SELECT * FROM library WHERE user_id=? ORDER BY added DESC", (uid,)
-        ).fetchall()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM library WHERE user_id = %s ORDER BY added DESC", (uid,))
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description]
+            return [dict(zip(cols, row)) for row in rows]
+        else:
+            return c.execute("SELECT * FROM library WHERE user_id=? ORDER BY added DESC", (uid,)).fetchall()
 
 def del_library(uid, lid):
-    with closing(db()) as c:
-        c.execute("DELETE FROM library WHERE id=? AND user_id=?", (lid, uid))
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("DELETE FROM library WHERE id = %s AND user_id = %s", (lid, uid))
+        else:
+            c.execute("DELETE FROM library WHERE id=? AND user_id=?", (lid, uid))
 
 def add_history(uid, title, artist):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        c.execute(
-            "INSERT INTO history(user_id, title, artist, played) VALUES(?,?,?,?)",
-            (uid, title, artist, now)
-        )
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "INSERT INTO history(user_id, title, artist, played) VALUES(%s, %s, %s, %s)",
+                (uid, title, artist, now)
+            )
+        else:
+            c.execute(
+                "INSERT INTO history(user_id, title, artist, played) VALUES(?,?,?,?)",
+                (uid, title, artist, now)
+            )
 
 def get_stats_user(uid):
-    with closing(db()) as c:
-        dl = c.execute(
-            "SELECT COUNT(*) as c FROM history WHERE user_id=?", (uid,)
-        ).fetchone()["c"]
-        lb = c.execute(
-            "SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)
-        ).fetchone()["c"]
-        listen_time = c.execute(
-            "SELECT SUM(duration_sec) as s FROM listening_stats WHERE user_id=?", (uid,)
-        ).fetchone()["s"] or 0
-        unique_artists = c.execute(
-            "SELECT COUNT(DISTINCT artist) as c FROM listening_stats WHERE user_id=?", (uid,)
-        ).fetchone()["c"] or 0
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT COUNT(*) as c FROM history WHERE user_id = %s", (uid,))
+            dl = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) as c FROM library WHERE user_id = %s", (uid,))
+            lb = c.fetchone()[0]
+            c.execute("SELECT COALESCE(SUM(duration_sec), 0) as s FROM listening_stats WHERE user_id = %s", (uid,))
+            listen_time = c.fetchone()[0]
+            c.execute("SELECT COUNT(DISTINCT artist) as c FROM listening_stats WHERE user_id = %s", (uid,))
+            unique_artists = c.fetchone()[0] or 0
+        else:
+            dl = c.execute("SELECT COUNT(*) as c FROM history WHERE user_id=?", (uid,)).fetchone()["c"]
+            lb = c.execute("SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)).fetchone()["c"]
+            listen_time = c.execute("SELECT SUM(duration_sec) as s FROM listening_stats WHERE user_id=?", (uid,)).fetchone()["s"] or 0
+            unique_artists = c.execute("SELECT COUNT(DISTINCT artist) as c FROM listening_stats WHERE user_id=?", (uid,)).fetchone()["c"] or 0
     return {"dl": dl, "lib": lb, "listen_time": listen_time, "unique_artists": unique_artists}
 
 def add_listening_stat(uid, title, artist, duration_sec=0, source="download"):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        c.execute(
-            "INSERT INTO listening_stats(user_id, track_title, artist, duration_sec, played_at, source) VALUES(?,?,?,?,?,?)",
-            (uid, title, artist, duration_sec, now, source)
-        )
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "INSERT INTO listening_stats(user_id, track_title, artist, duration_sec, played_at, source) VALUES(%s, %s, %s, %s, %s, %s)",
+                (uid, title, artist, duration_sec, now, source)
+            )
+        else:
+            c.execute(
+                "INSERT INTO listening_stats(user_id, track_title, artist, duration_sec, played_at, source) VALUES(?,?,?,?,?,?)",
+                (uid, title, artist, duration_sec, now, source)
+            )
 
 def get_listening_stats(uid, days=30):
     since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
-    with closing(db()) as c:
-        total = c.execute(
-            "SELECT COUNT(*) as c FROM listening_stats WHERE user_id=? AND played_at>?",
-            (uid, since)
-        ).fetchone()["c"]
-        top_artists = c.execute("""
-            SELECT artist, COUNT(*) as c FROM listening_stats 
-            WHERE user_id=? AND played_at>? GROUP BY artist ORDER BY c DESC LIMIT 5
-        """, (uid, since)).fetchall()
-        top_tracks = c.execute("""
-            SELECT track_title, artist, COUNT(*) as c FROM listening_stats 
-            WHERE user_id=? AND played_at>? GROUP BY track_title, artist ORDER BY c DESC LIMIT 5
-        """, (uid, since)).fetchall()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT COUNT(*) as c FROM listening_stats WHERE user_id = %s AND played_at > %s", (uid, since))
+            total = c.fetchone()[0]
+            c.execute("""
+                SELECT artist, COUNT(*) as c FROM listening_stats 
+                WHERE user_id = %s AND played_at > %s GROUP BY artist ORDER BY c DESC LIMIT 5
+            """, (uid, since))
+            top_artists = c.fetchall()
+            c.execute("""
+                SELECT track_title, artist, COUNT(*) as c FROM listening_stats 
+                WHERE user_id = %s AND played_at > %s GROUP BY track_title, artist ORDER BY c DESC LIMIT 5
+            """, (uid, since))
+            top_tracks = c.fetchall()
+        else:
+            total = c.execute(
+                "SELECT COUNT(*) as c FROM listening_stats WHERE user_id=? AND played_at>?",
+                (uid, since)
+            ).fetchone()["c"]
+            top_artists = c.execute("""
+                SELECT artist, COUNT(*) as c FROM listening_stats 
+                WHERE user_id=? AND played_at>? GROUP BY artist ORDER BY c DESC LIMIT 5
+            """, (uid, since)).fetchall()
+            top_tracks = c.execute("""
+                SELECT track_title, artist, COUNT(*) as c FROM listening_stats 
+                WHERE user_id=? AND played_at>? GROUP BY track_title, artist ORDER BY c DESC LIMIT 5
+            """, (uid, since)).fetchall()
     return {"total": total, "top_artists": top_artists, "top_tracks": top_tracks}
 
 def get_all_users():
-    with closing(db()) as c:
-        return c.execute("SELECT * FROM users").fetchall()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM users")
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description]
+            return [dict(zip(cols, row)) for row in rows]
+        else:
+            return c.execute("SELECT * FROM users").fetchall()
 
 def get_global_stats():
-    with closing(db()) as c:
-        total = c.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
-        premium = c.execute(
-            "SELECT COUNT(*) as c FROM users WHERE is_premium=1"
-        ).fetchone()["c"]
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT COUNT(*) as c FROM users")
+            total = c.fetchone()[0]
+            c.execute("SELECT COUNT(*) as c FROM users WHERE is_premium = TRUE")
+            premium = c.fetchone()[0]
+        else:
+            total = c.execute("SELECT COUNT(*) as c FROM users").fetchone()["c"]
+            premium = c.execute(
+                "SELECT COUNT(*) as c FROM users WHERE is_premium=1"
+            ).fetchone()["c"]
     return {"total": total, "premium": premium, "free": total - premium}
 
 # ─── ПЛЕЙЛИСТИ ────────────────────────────────────────────────────────────────
 def create_playlist(uid, name, description=""):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        c.execute(
-            "INSERT INTO playlists(user_id, name, description, created, updated) VALUES(?,?,?,?,?)",
-            (uid, name, description, now, now)
-        )
-        c.commit()
-        return c.lastrowid
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "INSERT INTO playlists(user_id, name, description, created, updated) VALUES(%s, %s, %s, %s, %s) RETURNING id",
+                (uid, name, description, now, now)
+            )
+            return c.fetchone()[0]
+        else:
+            c.execute(
+                "INSERT INTO playlists(user_id, name, description, created, updated) VALUES(?,?,?,?,?)",
+                (uid, name, description, now, now)
+            )
+            return c.lastrowid
 
 def get_playlists(uid):
-    with closing(db()) as c:
-        return c.execute(
-            "SELECT * FROM playlists WHERE user_id=? ORDER BY updated DESC", (uid,)
-        ).fetchall()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM playlists WHERE user_id = %s ORDER BY updated DESC", (uid,))
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description]
+            return [dict(zip(cols, row)) for row in rows]
+        else:
+            return c.execute(
+                "SELECT * FROM playlists WHERE user_id=? ORDER BY updated DESC", (uid,)
+            ).fetchall()
 
 def get_playlist(pid):
-    with closing(db()) as c:
-        pl = c.execute("SELECT * FROM playlists WHERE id=?", (pid,)).fetchone()
-        tracks = c.execute(
-            "SELECT * FROM playlist_tracks WHERE playlist_id=? ORDER BY id", (pid,)
-        ).fetchall()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM playlists WHERE id = %s", (pid,))
+            row = c.fetchone()
+            cols = [desc[0] for desc in c.description]
+            pl = dict(zip(cols, row)) if row else None
+            c.execute("SELECT * FROM playlist_tracks WHERE playlist_id = %s ORDER BY id", (pid,))
+            rows = c.fetchall()
+            cols = [desc[0] for desc in c.description]
+            tracks = [dict(zip(cols, row)) for row in rows]
+        else:
+            pl = c.execute("SELECT * FROM playlists WHERE id=?", (pid,)).fetchone()
+            tracks = c.execute(
+                "SELECT * FROM playlist_tracks WHERE playlist_id=? ORDER BY id", (pid,)
+            ).fetchall()
         return pl, tracks
 
 def add_track_to_playlist(pid, title, artist, url, duration=""):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        c.execute(
-            "INSERT INTO playlist_tracks(playlist_id, title, artist, url, duration, added) VALUES(?,?,?,?,?,?)",
-            (pid, title, artist, url, duration, now)
-        )
-        c.execute("UPDATE playlists SET updated=? WHERE id=?", (now, pid))
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "INSERT INTO playlist_tracks(playlist_id, title, artist, url, duration, added) VALUES(%s, %s, %s, %s, %s, %s)",
+                (pid, title, artist, url, duration, now)
+            )
+            c.execute("UPDATE playlists SET updated = %s WHERE id = %s", (now, pid))
+        else:
+            c.execute(
+                "INSERT INTO playlist_tracks(playlist_id, title, artist, url, duration, added) VALUES(?,?,?,?,?,?)",
+                (pid, title, artist, url, duration, now)
+            )
+            c.execute("UPDATE playlists SET updated=? WHERE id=?", (now, pid))
 
 def delete_playlist(uid, pid):
-    with closing(db()) as c:
-        c.execute("DELETE FROM playlists WHERE id=? AND user_id=?", (pid, uid))
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("DELETE FROM playlists WHERE id = %s AND user_id = %s", (pid, uid))
+        else:
+            c.execute("DELETE FROM playlists WHERE id=? AND user_id=?", (pid, uid))
 
 def delete_playlist_track(pid, tid):
-    with closing(db()) as c:
-        c.execute(
-            "DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", (tid, pid)
-        )
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "DELETE FROM playlist_tracks WHERE id = %s AND playlist_id = %s", (tid, pid)
+            )
+        else:
+            c.execute(
+                "DELETE FROM playlist_tracks WHERE id=? AND playlist_id=?", (tid, pid)
+            )
 
 # ─── РАДІО СЕСІЇ ──────────────────────────────────────────────────────────────
 def create_radio_session(uid, seed_artist, seed_track, tracks):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     tracks_json = json.dumps(tracks)
-    with closing(db()) as c:
-        c.execute(
-            "INSERT INTO radio_sessions(user_id, seed_artist, seed_track, tracks_json, created, updated) VALUES(?,?,?,?,?,?)",
-            (uid, seed_artist, seed_track, tracks_json, now, now)
-        )
-        c.commit()
-        return c.lastrowid
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "INSERT INTO radio_sessions(user_id, seed_artist, seed_track, tracks_json, created, updated) VALUES(%s, %s, %s, %s, %s, %s) RETURNING id",
+                (uid, seed_artist, seed_track, tracks_json, now, now)
+            )
+            return c.fetchone()[0]
+        else:
+            c.execute(
+                "INSERT INTO radio_sessions(user_id, seed_artist, seed_track, tracks_json, created, updated) VALUES(?,?,?,?,?,?)",
+                (uid, seed_artist, seed_track, tracks_json, now, now)
+            )
+            return c.lastrowid
 
 def get_radio_session(rid):
-    with closing(db()) as c:
-        r = c.execute("SELECT * FROM radio_sessions WHERE id=?", (rid,)).fetchone()
-        if r:
-            return dict(r), json.loads(r["tracks_json"])
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute("SELECT * FROM radio_sessions WHERE id = %s", (rid,))
+            row = c.fetchone()
+            if row:
+                cols = [desc[0] for desc in c.description]
+                r = dict(zip(cols, row))
+                return r, json.loads(r["tracks_json"])
+        else:
+            r = c.execute("SELECT * FROM radio_sessions WHERE id=?", (rid,)).fetchone()
+            if r:
+                return dict(r), json.loads(r["tracks_json"])
         return None, []
 
 def update_radio_idx(rid, idx):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    with closing(db()) as c:
-        c.execute(
-            "UPDATE radio_sessions SET current_idx=?, updated=? WHERE id=?",
-            (idx, now, rid)
-        )
-        c.commit()
+    with db() as c:
+        if USE_POSTGRES:
+            c.execute(
+                "UPDATE radio_sessions SET current_idx = %s, updated = %s WHERE id = %s",
+                (idx, now, rid)
+            )
+        else:
+            c.execute(
+                "UPDATE radio_sessions SET current_idx=?, updated=? WHERE id=?",
+                (idx, now, rid)
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3196,18 +3391,34 @@ async def handle_admin_input(update, ctx, state, text):
         await update.message.reply_text(f"✅ Розіслано {sent}/{len(users)}")
     elif state == "adm:find":
         search = text.strip()
-        with closing(db()) as c:
-            if search.startswith("@"):
-                user = c.execute(
-                    "SELECT * FROM users WHERE username=?", (search[1:],)
-                ).fetchone()
-            else:
-                try:
-                    user = c.execute(
-                        "SELECT * FROM users WHERE id=?", (int(search),)
-                    ).fetchone()
-                except ValueError:
+        with db() as c:
+            if USE_POSTGRES:
+                if search.startswith("@"):
+                    c.execute("SELECT * FROM users WHERE username = %s", (search[1:],))
+                    row = c.fetchone()
+                else:
+                    try:
+                        c.execute("SELECT * FROM users WHERE id = %s", (int(search),))
+                        row = c.fetchone()
+                    except ValueError:
+                        row = None
+                if row:
+                    cols = [desc[0] for desc in c.description]
+                    user = dict(zip(cols, row))
+                else:
                     user = None
+            else:
+                if search.startswith("@"):
+                    user = c.execute(
+                        "SELECT * FROM users WHERE username=?", (search[1:],)
+                    ).fetchone()
+                else:
+                    try:
+                        user = c.execute(
+                            "SELECT * FROM users WHERE id=?", (int(search),)
+                        ).fetchone()
+                    except ValueError:
+                        user = None
         if user:
             status = "💎 Premium" if user['is_premium'] else "💿 Free"
             stats = get_stats_user(user['id'])
