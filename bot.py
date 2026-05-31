@@ -1046,24 +1046,37 @@ def sc_search(query, limit=5):
     return tracks
 
 def search_all(query, limit=10):
-    """Search YouTube + Spotify + SoundCloud"""
+    """Search SoundCloud → YouTube → Spotify"""
     results = []
+    seen_urls = set()
 
-    # 1. YouTube (основне джерело)
-    yt = yt_search(query, limit)
-    results.extend(yt)
+    # 1. SoundCloud (найстабільніше, без блокування)
+    sc = sc_search(query, limit)
+    for track in sc:
+        if track["url"] not in seen_urls:
+            seen_urls.add(track["url"])
+            results.append(track)
+    if results:
+        logger.info(f"SoundCloud found {len(results)} tracks")
 
-    # 2. Spotify (якщо є credentials)
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    # 2. YouTube (fallback, може блокувати)
+    if len(results) < limit:
+        yt = yt_search(query, limit)
+        for track in yt:
+            if track["url"] not in seen_urls:
+                seen_urls.add(track["url"])
+                results.append(track)
+
+    # 3. Spotify (якщо є credentials)
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET and len(results) < limit:
         try:
             spotify_tracks = search_spotify_tracks(query, limit=5)
-            results.extend(spotify_tracks)
+            for track in spotify_tracks:
+                if track["url"] not in seen_urls:
+                    seen_urls.add(track["url"])
+                    results.append(track)
         except Exception as e:
             logger.warning(f"Spotify search failed: {e}")
-
-    # 3. SoundCloud
-    sc = sc_search(query, 5)
-    results.extend(sc)
 
     return results[:limit + 5]
 
@@ -1417,6 +1430,9 @@ def download_mp3(url, out_dir, quality="192"):
     if cookies_file:
         base_opts["cookies"] = cookies_file
         logger.info(f"Using cookies for download: {cookies_file}")
+
+    # Перевіряємо чи це SoundCloud — там простіше
+    is_soundcloud = "soundcloud.com" in url or "snd.sc" in url
     last_error = None
     tried_clients = []
     for i, client in enumerate(YT_CLIENTS):
