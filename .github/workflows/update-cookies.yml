@@ -1,0 +1,28 @@
+name: Update YouTube Cookies & Deploy
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  update-cookies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Create basic cookies
+        run: |
+          cat > youtube_cookies.txt << 'EOF'
+          # Netscape HTTP Cookie File
+          .youtube.com	TRUE	/	TRUE	9999999999	CONSENT	YES+UA.en-US+20240101-09-0
+          .youtube.com	TRUE	/	TRUE	9999999999	VISITOR_INFO1_LIVE	placeholder
+          EOF
+
+      - name: Commit
+        run: |
+          git config user.email "action@github.com"
+          git config user.name "GitHub Action"
+          git add youtube_cookies.txt
+          git diff --staged --quiet || git commit -m "Update cookies [automated]"
+          git push || echo "No changes"
