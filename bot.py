@@ -957,15 +957,13 @@ BASE_YTDL_OPTS = {
     # НЕ додаємо referer чи cookies — це викликає блокування
 }
 
-def get_yt_opts(client_idx=0, extra=None):
+def get_yt_opts(client_idx=0, extra=None, use_cookies=False):
     opts = dict(BASE_YTDL_OPTS)
     client_config = dict(YT_CLIENTS[client_idx])
 
-    # Додаємо PO Token якщо є
-    # Формат: "client.gvs+TOKEN" або просто "TOKEN"
-    if YT_PO_TOKEN:
+    # Додаємо PO Token якщо є (для завантаження)
+    if YT_PO_TOKEN and use_cookies:
         client_name = client_config["player_client"]
-        # Пробуємо різні формати PO Token
         po_token_arg = f"{client_name}.gvs+{YT_PO_TOKEN}"
         client_config["po_token"] = po_token_arg
         logger.info(f"Using PO Token for {client_name}: {YT_PO_TOKEN[:20]}...")
@@ -973,12 +971,11 @@ def get_yt_opts(client_idx=0, extra=None):
     # Додаємо visitor_data якщо є
     if YT_VISITOR_DATA:
         client_config["visitor_data"] = YT_VISITOR_DATA
-        logger.info(f"Using visitor_data: {YT_VISITOR_DATA[:20]}...")
 
-    # Додаємо cookies якщо знайшли
-    cookies = find_cookies_file()
-    if cookies:
-        opts["cookies"] = cookies
+    # Додаємо cookies тільки для завантаження, не для пошуку!
+    if use_cookies and COOKIES_FILE:
+        opts["cookies"] = COOKIES_FILE
+        logger.info(f"Using cookies for download: {COOKIES_FILE}")
 
     opts["extractor_args"] = {"youtube": client_config}
     if extra:
@@ -987,9 +984,11 @@ def get_yt_opts(client_idx=0, extra=None):
 
 # ─── Пошук YouTube/SoundCloud ─────────────────────────────────────────────────
 def yt_search(query, limit=10):
+    """Search YouTube without cookies — works better!"""
     for i, client in enumerate(YT_CLIENTS):
         try:
-            opts = get_yt_opts(client_idx=i)
+            # Пошук БЕЗ cookies — так більше форматів доступно
+            opts = get_yt_opts(client_idx=i, use_cookies=False)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
             tracks = []
@@ -1047,9 +1046,58 @@ def sc_search(query, limit=5):
     return tracks
 
 def search_all(query, limit=10):
+    """Search YouTube + Spotify + SoundCloud"""
+    results = []
+
+    # 1. YouTube (основне джерело)
     yt = yt_search(query, limit)
+    results.extend(yt)
+
+    # 2. Spotify (якщо є credentials)
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        try:
+            spotify_tracks = search_spotify_tracks(query, limit=5)
+            results.extend(spotify_tracks)
+        except Exception as e:
+            logger.warning(f"Spotify search failed: {e}")
+
+    # 3. SoundCloud
     sc = sc_search(query, 5)
-    return (yt + sc)[:limit + 5]
+    results.extend(sc)
+
+    return results[:limit + 5]
+
+def search_spotify_tracks(query, limit=5):
+    """Search tracks in Spotify."""
+    token = get_spotify_token()
+    if not token:
+        return []
+
+    import urllib.parse
+    encoded = urllib.parse.quote(query)
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"https://api.spotify.com/v1/search?q={encoded}&type=track&limit={limit}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        tracks = []
+        for item in data.get("tracks", {}).get("items", []):
+            artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
+            tracks.append({
+                "title": f"{artists} - {item.get('name', 'Unknown')}",
+                "url": item.get("external_urls", {}).get("spotify", ""),
+                "id": item.get("id", ""),
+                "duration": fmt_dur_ms(item.get("duration_ms", 0)),
+                "channel": artists,
+                "source": "spotify",
+                "spotify_id": item.get("id", ""),
+            })
+        return tracks
+    except Exception as e:
+        logger.error(f"Spotify track search error: {e}")
+        return []
 
 def artist_songs(artist, limit=50):
     return yt_search(f"{artist} official audio", limit)
@@ -1356,10 +1404,9 @@ def download_mp3(url, out_dir, quality="192"):
         "extractor_retries": 3,
     }
 
-    # Додаємо cookies якщо знайшли
-    cookies = find_cookies_file()
-    if cookies:
-        base_opts["cookies"] = cookies
+    # Додаємо cookies для завантаження (можуть допомогти з age-restricted)
+    if COOKIES_FILE:
+        base_opts["cookies"] = COOKIES_FILE
     last_error = None
     tried_clients = []
     for i, client in enumerate(YT_CLIENTS):
