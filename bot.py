@@ -2462,29 +2462,22 @@ async def do_download(msg, url, title, artist, uid, ctx):
     l = get_lang(uid)
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
-    texts = {
-        "uk": {"downloading": "⬇️ Завантажую", "sending": "📤 Відправляю", "error": "❌ Помилка", "big": "Файл завеликий", "limit": "ліміт", "done": "✅ Готово!", "add_lib": "📚 Додати в бібліотеку"},
-        "ru": {"downloading": "⬇️ Скачиваю", "sending": "📤 Отправляю", "error": "❌ Ошибка", "big": "Файл слишком большой", "limit": "лимит", "done": "✅ Готово!", "add_lib": "📚 Добавить в библиотеку"},
-        "en": {"downloading": "⬇️ Downloading", "sending": "📤 Sending", "error": "❌ Error", "big": "File too big", "limit": "limit", "done": "✅ Done!", "add_lib": "📚 Add to library"},
-        "fr": {"downloading": "⬇️ Téléchargement", "sending": "📤 Envoi", "error": "❌ Erreur", "big": "Fichier trop gros", "limit": "limite", "done": "✅ Terminé!", "add_lib": "📚 Ajouter à la bibliothèque"},
-    }
-    t = texts.get(l, texts["en"])
-
-    status = await msg.reply_text(f"{t['downloading']} <b>{title[:50]}</b>…", parse_mode="HTML")
+    status = await msg.reply_text("🎵", parse_mode="HTML")
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
+            await status.edit_text("🔥", parse_mode="HTML")
             path = await async_download_with_fallback(url, tmp, quality)
             if not path or not os.path.exists(path):
-                await status.edit_text(f"{t['error']} ❌", parse_mode="HTML")
+                await status.edit_text("💔")
                 return
 
             size_mb = os.path.getsize(path) / 1024 / 1024
             if size_mb > MAX_MB:
-                await status.edit_text(f"{t['big']} ({size_mb:.1f} MB / {t['limit']} {MAX_MB} MB) ❌")
+                await status.edit_text("😤")
                 return
 
-            await status.edit_text(f"{t['sending']} <b>{title[:50]}</b>…", parse_mode="HTML")
+            await status.edit_text("💿", parse_mode="HTML")
 
             with open(path, "rb") as f:
                 await msg.reply_audio(
@@ -2494,20 +2487,20 @@ async def do_download(msg, url, title, artist, uid, ctx):
                     filename=f"{title[:50]}.mp3"
                 )
 
-            await status.delete()
+            await status.edit_text("🚀")
             add_history(uid, title, artist)
             add_listening_stat(uid, title, artist, 0, "download")
 
             url_id = cache_url(ctx.bot_data, url, title, artist)
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t['add_lib'], callback_data=f"addlib|{url_id}")],
+                [InlineKeyboardButton("💾", callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            await msg.reply_text(t['done'], reply_markup=kb)
+            await msg.reply_text("🎧", reply_markup=kb)
 
         except Exception as e:
             logger.error(f"Download error: {e}")
-            await status.edit_text(f"{t['error']} ❌", parse_mode="HTML")
+            await status.edit_text("💔")
 
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     """Download Spotify album as ZIP."""
@@ -2798,8 +2791,8 @@ async def show_profile(msg, uid):
     u = get_user(uid)
     stats = get_stats_user(uid)
     status_text = "💎 Premium" if is_premium(uid) else "💿 Free"
-    joined = u["joined"][:10] if u and u["joined"] else "—"
-    premium_since = u["premium_since"][:10] if u and u["premium_since"] else "—"
+    joined = str(u["joined"])[:10] if u and u["joined"] else "—"
+    premium_since = str(u["premium_since"])[:10] if u and u["premium_since"] else "—"
     listen_hours = stats["listen_time"] // 3600 if stats["listen_time"] else 0
 
     text = (
