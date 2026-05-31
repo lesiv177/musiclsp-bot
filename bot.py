@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MusicLSP v3.0 — Fixed & Clean
-Робота без cookies, робочі player_client, виправлені Premium функції
+MusicLSP v3.1 — Deezer + SoundCloud + Spotify
+Робота без cookies, Deezer API для пошуку, SoundCloud/Deezer/Spotify для завантаження
 """
 
 import os
@@ -77,7 +77,13 @@ BOT_NAME = "MusicLSP"
 AUTH_BOT = "@MusicLSPauth_bot"
 SEARCH_PER_PAGE = 10
 
-# ─── Spotify Credentials# ─── Spotify Credentials (з env) ──────────────────────────────────────────────
+# ─── Deezer ARL Cookie (для повного завантаження, не обов'язково) ─────────────
+DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
+
+# ─── Spotify Credentials# ─── Deezer ARL Cookie (для повного завантаження, не обов'язково) ─────────────
+DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
+
+# ─── Spotify Credentials (з env) ──────────────────────────────────────────────
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 # Якщо не заповнені — Spotify функції не працюватимуть
@@ -211,6 +217,132 @@ def fmt_dur(s):
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DEEZER API — ПОШУК ТА ІНФОРМАЦІЯ (без авторизації)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def dz_search_tracks(query, limit=15):
+    """Search tracks on Deezer public API (no auth required)."""
+    try:
+        encoded = urllib.parse.quote(query)
+        url = f"https://api.deezer.com/search/track?q={encoded}&limit={limit}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        tracks = []
+        for item in data.get("data", []):
+            artist_name = item.get("artist", {}).get("name", "Unknown")
+            tracks.append({
+                "title": f"{artist_name} - {item.get('title', 'Unknown')}",
+                "url": item.get("link", ""),
+                "id": str(item.get("id", "")),
+                "duration": fmt_dur(item.get("duration", 0)),
+                "channel": artist_name,
+                "source": "deezer",
+                "preview_url": item.get("preview", ""),
+                "album": item.get("album", {}).get("title", ""),
+                "cover": item.get("album", {}).get("cover", ""),
+            })
+        logger.info(f"Deezer search: {len(tracks)} results for '{query}'")
+        return tracks
+    except Exception as e:
+        logger.warning(f"Deezer search failed: {e}")
+        return []
+
+def dz_search_albums(query, limit=10):
+    """Search albums on Deezer public API."""
+    try:
+        encoded = urllib.parse.quote(query)
+        url = f"https://api.deezer.com/search/album?q={encoded}&limit={limit}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        albums = []
+        for item in data.get("data", []):
+            artist_name = item.get("artist", {}).get("name", "Unknown")
+            albums.append({
+                "id": str(item.get("id", "")),
+                "name": item.get("title", "Unknown"),
+                "artist": artist_name,
+                "release_date": item.get("release_date", "—"),
+                "year": item.get("release_date", "—")[:4] if item.get("release_date") else "—",
+                "total_tracks": item.get("nb_tracks", 0),
+                "image_url": item.get("cover", ""),
+                "source": "deezer",
+                "deezer_id": str(item.get("id", "")),
+            })
+        return albums
+    except Exception as e:
+        logger.warning(f"Deezer album search failed: {e}")
+        return []
+
+def dz_get_album_tracks(album_id):
+    """Get album tracks from Deezer."""
+    try:
+        url = f"https://api.deezer.com/album/{album_id}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        album = resp.json()
+
+        tracks = []
+        total_duration = 0
+        for i, track in enumerate(album.get("tracks", {}).get("data", [])):
+            dur = track.get("duration", 0)
+            total_duration += dur
+            artist_name = track.get("artist", {}).get("name", "Unknown")
+            tracks.append({
+                "name": track.get("title", "Unknown"),
+                "artists": artist_name,
+                "duration": fmt_dur(dur),
+                "duration_sec": dur,
+                "track_number": i + 1,
+                "deezer_id": str(track.get("id", "")),
+                "url": track.get("link", ""),
+            })
+
+        artist_name = album.get("artist", {}).get("name", "Unknown")
+        return {
+            "id": album_id,
+            "name": album.get("title", "Unknown Album"),
+            "artist": artist_name,
+            "release_date": album.get("release_date", "—"),
+            "year": album.get("release_date", "—")[:4] if album.get("release_date") else "—",
+            "total_tracks": len(tracks),
+            "tracks": tracks,
+            "total_duration": fmt_dur(total_duration),
+            "total_duration_sec": total_duration,
+            "label": album.get("label", "—"),
+            "image_url": album.get("cover", ""),
+            "source": "deezer",
+        }
+    except Exception as e:
+        logger.error(f"Deezer album tracks error: {e}")
+        return None
+
+def dz_get_artist_top(artist_name, limit=20):
+    """Get top tracks by artist from Deezer."""
+    try:
+        encoded = urllib.parse.quote(artist_name)
+        url = f"https://api.deezer.com/search/track?q=artist:"{encoded}"&limit={limit}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        tracks = []
+        for item in data.get("data", []):
+            artist = item.get("artist", {}).get("name", "Unknown")
+            tracks.append({
+                "title": f"{artist} - {item.get('title', 'Unknown')}",
+                "url": item.get("link", ""),
+                "id": str(item.get("id", "")),
+                "duration": fmt_dur(item.get("duration", 0)),
+                "channel": artist,
+                "source": "deezer",
+            })
+        return tracks
+    except Exception as e:
+        logger.warning(f"Deezer artist top failed: {e}")
+        return []
+
 # ─── MUSIC_GENRES ────────────────────────────────────────────────────────────
 MUSIC_GENRES = {
     "uk": {
@@ -261,10 +393,10 @@ LANGUAGES = {
 
 TEXTS = {
     "welcome": {
-        "uk": "🎵 <b>Вітаємо в {bot}!</b>\n\n👤 <i>Автор: {author}</i>\n\n💿 <b>Free</b> — пошук, завантаження, бібліотека (20)\n💎 <b>Premium</b> — ZIP, плейлисти, радіо, статистика, схожа музика",
-        "ru": "🎵 <b>Добро пожаловать в {bot}!</b>\n\n👤 <i>Автор: {author}</i>\n\n💿 <b>Free</b> — поиск, скачивание, библиотека (20)\n💎 <b>Premium</b> — ZIP, плейлисты, радио, статистика, похожая музыка",
-        "en": "🎵 <b>Welcome to {bot}!</b>\n\n👤 <i>Author: {author}</i>\n\n💿 <b>Free</b> — search, download, library (20)\n💎 <b>Premium</b> — ZIP, playlists, radio, stats, similar music",
-        "fr": "🎵 <b>Bienvenue sur {bot}!</b>\n\n👤 <i>Auteur: {author}</i>\n\n💿 <b>Free</b> — recherche, téléchargement, bibliothèque (20)\n💎 <b>Premium</b> — ZIP, playlists, radio, stats, musique similaire",
+        "uk": "🎵 <b>Вітаємо в {bot}!</b>\n\n💿 <b>Free</b> — пошук, завантаження, бібліотека (20)\n💎 <b>Premium</b> — ZIP, плейлисти, радіо, статистика, схожа музика",
+        "ru": "🎵 <b>Добро пожаловать в {bot}!</b>\n\n💿 <b>Free</b> — поиск, скачивание, библиотека (20)\n💎 <b>Premium</b> — ZIP, плейлисты, радио, статистика, похожая музыка",
+        "en": "🎵 <b>Welcome to {bot}!</b>\n\n💿 <b>Free</b> — search, download, library (20)\n💎 <b>Premium</b> — ZIP, playlists, radio, stats, similar music",
+        "fr": "🎵 <b>Bienvenue sur {bot}!</b>\n\n💿 <b>Free</b> — recherche, téléchargement, bibliothèque (20)\n💎 <b>Premium</b> — ZIP, playlists, radio, stats, musique similaire",
     },
     "premium_only": {
         "uk": "⛔ Тільки для <b>Premium</b>\n💎 Оформити → /subscription",
@@ -1064,30 +1196,45 @@ def sc_search(query, limit=15):
     return tracks
 
 def search_all(query, limit=10):
-    """Search SoundCloud + Spotify (no YouTube)."""
+    """Search SoundCloud → Deezer → Spotify. Return unified results."""
     results = []
     seen_urls = set()
+    seen_titles = set()
 
-    # 1. SoundCloud (основне джерело, без блокування)
+    # 1. SoundCloud (основне джерело)
     sc = sc_search(query, limit)
     for track in sc:
-        if track["url"] not in seen_urls:
-            seen_urls.add(track["url"])
+        key = track["url"]
+        if key not in seen_urls:
+            seen_urls.add(key)
+            seen_titles.add(track["title"].lower().strip())
             results.append(track)
-    if results:
-        logger.info(f"SoundCloud found {len(results)} tracks")
 
-    # 2. Spotify (якщо є credentials)
+    # 2. Deezer (додаткове джерело)
+    dz = dz_search_tracks(query, limit)
+    for track in dz:
+        key = track["url"]
+        title_key = track["title"].lower().strip()
+        if key and key not in seen_urls and title_key not in seen_titles:
+            seen_urls.add(key)
+            seen_titles.add(title_key)
+            results.append(track)
+
+    # 3. Spotify (якщо є credentials)
     if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         try:
             spotify_tracks = search_spotify_tracks(query, limit=limit)
             for track in spotify_tracks:
-                if track["url"] not in seen_urls:
-                    seen_urls.add(track["url"])
+                key = track["url"]
+                title_key = track["title"].lower().strip()
+                if key and key not in seen_urls and title_key not in seen_titles:
+                    seen_urls.add(key)
+                    seen_titles.add(title_key)
                     results.append(track)
         except Exception as e:
             logger.warning(f"Spotify search failed: {e}")
 
+    logger.info(f"Total search results for '{query}': {len(results)} (SC:{len(sc)}, DZ:{len(dz)})")
     return results[:limit + 5]
 
 
@@ -1169,7 +1316,7 @@ async def search_by_genre(msg, genre_key, uid, ctx):
 
     kb = []
     for i, t in enumerate(tracks[:10]):
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟢"
+        icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {t['title'][:40]} ({t['duration']})",
@@ -1219,13 +1366,29 @@ def search_spotify_tracks(query, limit=5):
         return []
 
 def artist_songs(artist, limit=50):
-    """Search artist songs on SoundCloud."""
-    return sc_search(f"{artist}", limit)
+    """Search artist songs on SoundCloud + Deezer."""
+    results = []
+    seen = set()
+
+    # SoundCloud
+    sc = sc_search(artist, limit)
+    for t in sc:
+        if t["url"] not in seen:
+            seen.add(t["url"])
+            results.append(t)
+
+    # Deezer
+    dz = dz_get_artist_top(artist, limit)
+    for t in dz:
+        if t["url"] not in seen:
+            seen.add(t["url"])
+            results.append(t)
+
+    return results[:limit]
 
 def find_track_for_download(track_name, artist_name):
-    """Find track on SoundCloud or Spotify with multiple fallbacks."""
+    """Find track URL for download. Chain: SoundCloud → Deezer → Spotify."""
 
-    # Різні варіанти запитів
     queries = [
         f"{artist_name} {track_name}",
         f"{track_name} {artist_name}",
@@ -1238,7 +1401,6 @@ def find_track_for_download(track_name, artist_name):
         try:
             result = sc_search(query, limit=5)
             if result:
-                # Перевіримо чи трек справді підходить
                 for r in result:
                     title_lower = r["title"].lower()
                     if track_name.lower() in title_lower or artist_name.lower() in title_lower:
@@ -1247,7 +1409,6 @@ def find_track_for_download(track_name, artist_name):
                             "url": r["url"],
                             "source": "soundcloud",
                         }
-                # Якщо не знайшли точний — беремо перший
                 return {
                     "title": result[0]["title"],
                     "url": result[0]["url"],
@@ -1256,7 +1417,27 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"SC search failed for '{query}': {e}")
 
-        # 2. Spotify (якщо є credentials)
+        # 2. Deezer
+        try:
+            dz = dz_search_tracks(query, limit=5)
+            if dz:
+                for d in dz:
+                    title_lower = d["title"].lower()
+                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                        return {
+                            "title": d["title"],
+                            "url": d["url"],
+                            "source": "deezer",
+                        }
+                return {
+                    "title": dz[0]["title"],
+                    "url": dz[0]["url"],
+                    "source": "deezer",
+                }
+        except Exception as e:
+            logger.warning(f"Deezer search failed for '{query}': {e}")
+
+        # 3. Spotify
         if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
             try:
                 spotify = search_spotify_tracks(query, limit=5)
@@ -1537,7 +1718,7 @@ async def async_find_track(track_name, artist_name):
 
 # ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    """Download MP3 from SoundCloud or Spotify (no YouTube)."""
+    """Download MP3 from SoundCloud, Deezer or Spotify."""
 
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
@@ -1558,6 +1739,11 @@ def download_mp3(url, out_dir, quality="192"):
         "file_access_retries": 3,
         "extractor_retries": 3,
     }
+
+    # Add Deezer ARL cookie if available and URL is from Deezer
+    if DEEZER_ARL and "deezer.com" in url:
+        base_opts["cookies"] = {"arl": DEEZER_ARL}
+        logger.info("Using Deezer ARL cookie for download")
 
     try:
         with yt_dlp.YoutubeDL(base_opts) as ydl:
@@ -2409,7 +2595,7 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     kb = []
     for i, t in enumerate(tracks):
         global_idx = start + i
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟢"
+        icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {t['title'][:42]} ({t['duration']})",
@@ -3263,7 +3449,7 @@ async def ai_recommend(msg, query, uid, ctx):
     ctx.bot_data.setdefault("cache", {})[ck] = similar
     kb = []
     for i, t in enumerate(similar[:10]):
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟢"
+        icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
         kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
     kb.append([back_btn(uid)])
     text = f"🤖 <b>Схожа музика для:</b> {query}\n🎤 <b>Базовий артист:</b> {seed_artist}\n\nЗнайдено {len(similar)} треків:\n\nОбери пісню 👇"
