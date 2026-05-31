@@ -1644,6 +1644,31 @@ def back_btn(uid):
     )
 
 # ─── /start ───────────────────────────────────────────────────────────────────
+async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Admin panel."""
+    uid = update.effective_user.id
+    if uid != ADMIN_ID:
+        await update.message.reply_text("⛔ Access denied")
+        return
+
+    l = get_lang(uid)
+    texts = {
+        "uk": "🔧 <b>Адмін панель</b>\n\nВибери дію:",
+        "ru": "🔧 <b>Админ панель</b>\n\nВыбери действие:",
+        "en": "🔧 <b>Admin panel</b>\n\nChoose action:",
+        "fr": "🔧 <b>Panneau admin</b>\n\nChoisis l'action:",
+    }
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 Дати Premium", callback_data="adm:premium")],
+        [InlineKeyboardButton("💿 Забрати Premium", callback_data="adm:unpremium")],
+        [InlineKeyboardButton("📢 Розсилка", callback_data="adm:broadcast")],
+        [InlineKeyboardButton("🔍 Знайти юзера", callback_data="adm:find")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
+        [back_btn(uid)],
+    ])
+    await update.message.reply_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
+
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     username = update.effective_user.username or ""
@@ -1775,6 +1800,38 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:premium_menu":
         await show_sub(q.message, uid, ctx)
         return
+
+    # Admin callbacks
+    if data.startswith("adm:"):
+        if uid != ADMIN_ID:
+            await q.answer("⛔ No access", show_alert=True)
+            return
+
+        if data == "adm:premium":
+            set_state(uid, "adm:premium")
+            await q.message.edit_text("🔧 Введи ID користувача для Premium:", reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]))
+            return
+
+        if data == "adm:unpremium":
+            set_state(uid, "adm:unpremium")
+            await q.message.edit_text("🔧 Введи ID користувача для скасування Premium:", reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]))
+            return
+
+        if data == "adm:broadcast":
+            set_state(uid, "adm:broadcast")
+            await q.message.edit_text("📢 Введи текст для розсилки:", reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]))
+            return
+
+        if data == "adm:find":
+            set_state(uid, "adm:find")
+            await q.message.edit_text("🔍 Введи ID або @username:", reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]))
+            return
+
+        if data == "adm:stats":
+            stats = get_global_stats()
+            text = f"📊 <b>Статистика</b>\n\n👥 Всього: {stats['total']}\n💎 Premium: {stats['premium']}\n💿 Free: {stats['free']}"
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+            return
 
     # ZIP Albums (Premium)
     if data == "m:zip_albums":
@@ -2463,10 +2520,10 @@ async def do_download(msg, url, title, artist, uid, ctx):
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     txts = {
-        "uk": {"search": "🔍 Шукаю хіт...", "dl": "⬇️ Завантажую...", "send": "📤 Відправляю...", "done": "✅ Полетіло!", "err": "❌ Не вийшло", "big": "❌ Завеликий файл"},
-        "ru": {"search": "🔍 Ищу хит...", "dl": "⬇️ Качаю...", "send": "📤 Отправляю...", "done": "✅ Полетело!", "err": "❌ Не вышло", "big": "❌ Слишком большой"},
-        "en": {"search": "🔍 Finding banger...", "dl": "⬇️ Downloading...", "send": "📤 Sending...", "done": "✅ Here we go!", "err": "❌ Failed", "big": "❌ Too big"},
-        "fr": {"search": "🔍 Cherche le hit...", "dl": "⬇️ Télécharge...", "send": "📤 Envoie...", "done": "✅ C'est parti!", "err": "❌ Raté", "big": "❌ Trop gros"},
+        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло", "big": "😤 Завеликий файл"},
+        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло", "big": "😤 Слишком большой"},
+        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Failed", "big": "😤 Too big"},
+        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Raté", "big": "😤 Trop gros"},
     }
     t = txts.get(l, txts["en"])
 
@@ -2500,11 +2557,18 @@ async def do_download(msg, url, title, artist, uid, ctx):
             add_listening_stat(uid, title, artist, 0, "download")
 
             url_id = cache_url(ctx.bot_data, url, title, artist)
+            add_txts = {
+                "uk": "⭐ Додати в бібліотеку",
+                "ru": "⭐ Добавить в библиотеку",
+                "en": "⭐ Add to library",
+                "fr": "⭐ Ajouter à la bibliothèque",
+            }
+            add_txt = add_txts.get(l, add_txts["en"])
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💾", callback_data=f"addlib|{url_id}")],
+                [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            await msg.reply_text("🎧", reply_markup=kb)
+            await msg.reply_text("✨", reply_markup=kb)
 
         except Exception as e:
             logger.error(f"Download error: {e}")
@@ -3155,6 +3219,7 @@ def main():
 
     # Хендлери команд
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("admin", cmd_admin))
 
     # Хендлери callback
     app.add_handler(CallbackQueryHandler(on_callback))
