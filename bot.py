@@ -2941,13 +2941,8 @@ def scrape_genius_lyrics(url):
                 # Remove HTML tags
                 text = re.sub(r'<[^>]+>', '', match)
                 # Remove [Verse], [Chorus] etc styling
-                text = re.sub(r'\[.*?\]', lambda m: "
-
-" + m.group(0) + "
-", text)
-                lyrics += text + "
-
-"
+                text = re.sub(r'\[.*?\]', lambda m: "\n\n" + m.group(0) + "\n", text)
+                lyrics += text + "\n\n"
             return lyrics.strip()
 
         # Alternative: look for Lyrics__Container
