@@ -411,7 +411,15 @@ def init_postgres():
     finally:
         conn.close()
 
+def init_db():
+    """Initialize database (PostgreSQL or SQLite)."""
+    if USE_POSTGRES:
+        init_postgres()
+    else:
+        init_sqlite()
+
 def init_sqlite():
+    """Initialize SQLite tables."""
     with closing(db()) as c:
         c.executescript("""
         CREATE TABLE IF NOT EXISTS users (
