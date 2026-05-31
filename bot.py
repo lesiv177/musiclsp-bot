@@ -27,6 +27,7 @@ import io
 import random
 import subprocess
 import re
+import shutil
 import zipfile
 from pathlib import Path
 from contextlib import closing
