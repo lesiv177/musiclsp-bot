@@ -914,33 +914,9 @@ def update_radio_idx(rid, idx):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Оновлені робочі клієнти (2026)
-# Актуальні клієнти yt-dlp 2026
-# YouTube тепер вимагає PO Token для всіх клієнтів!
-# Документація: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-# 
-# Пріоритет клієнтів (з cookies/PO Token → без):
-# 1. web_safari — найкраща якість, потребує PO Token
-# 2. tv_embedded — для age-restricted, іноді працює без
-# 3. android_vr — fallback, часто UNPLAYABLE
-# 4. ios_downgraded — останній шанс
-YT_CLIENTS = [
-    {
-        "player_client": "web_safari",
-        "player_skip": ["webpage", "configs", "js"],
-    },
-    {
-        "player_client": "tv_embedded",
-        "player_skip": ["webpage", "configs", "js"],
-    },
-    {
-        "player_client": "android_vr",
-        "player_skip": ["webpage", "configs", "js"],
-    },
-    {
-        "player_client": "ios_downgraded",
-        "player_skip": ["webpage", "configs", "js"],
-    },
-]
+# Music Sources: Spotify + SoundCloud (YouTube removed - too many issues)
+# SoundCloud works without authentication
+# Spotify requires API credentials
 
 # Базові опції yt-dlp — БЕЗ cookies
 BASE_YTDL_OPTS = {
@@ -957,79 +933,19 @@ BASE_YTDL_OPTS = {
     # НЕ додаємо referer чи cookies — це викликає блокування
 }
 
-def get_yt_opts(client_idx=0, extra=None, use_cookies=False):
-    opts = dict(BASE_YTDL_OPTS)
-    client_config = dict(YT_CLIENTS[client_idx])
 
-    # Додаємо PO Token якщо є (для завантаження)
-    if YT_PO_TOKEN and use_cookies:
-        client_name = client_config["player_client"]
-        po_token_arg = f"{client_name}.gvs+{YT_PO_TOKEN}"
-        client_config["po_token"] = po_token_arg
-        logger.info(f"Using PO Token for {client_name}: {YT_PO_TOKEN[:20]}...")
-
-    # Додаємо visitor_data якщо є
-    if YT_VISITOR_DATA:
-        client_config["visitor_data"] = YT_VISITOR_DATA
-
-    # Додаємо cookies тільки для завантаження, не для пошуку!
-    if use_cookies and COOKIES_FILE:
-        opts["cookies"] = COOKIES_FILE
-        logger.info(f"Using cookies for download: {COOKIES_FILE}")
-
-    opts["extractor_args"] = {"youtube": client_config}
-    if extra:
-        opts.update(extra)
-    return opts
 
 # ─── Пошук YouTube/SoundCloud ─────────────────────────────────────────────────
-def yt_search(query, limit=10):
-    """Search YouTube without cookies — works better!"""
-    for i, client in enumerate(YT_CLIENTS):
-        try:
-            # Пошук БЕЗ cookies — так більше форматів доступно
-            opts = get_yt_opts(client_idx=i, use_cookies=False)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                r = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-            tracks = []
-            for e in (r.get("entries") or []):
-                if not e:
-                    continue
-                dur = e.get("duration", 0)
-                if dur and dur > 900:
-                    continue
-                tracks.append({
-                    "title": e.get("title", "Unknown"),
-                    "url": f"https://www.youtube.com/watch?v={e['id']}",
-                    "id": e["id"],
-                    "duration": fmt_dur(dur),
-                    "channel": e.get("channel") or e.get("uploader") or "—",
-                    "source": "youtube",
-                })
-            if tracks:
-                logger.info(
-                    f"yt_search success via {client['player_client']}: {len(tracks)} results"
-                )
-                return tracks
-        except Exception as e:
-            logger.warning(
-                f"yt_search {client['player_client']} failed: {str(e)[:100]}"
-            )
-            continue
-    logger.error("yt_search: all clients failed")
-    return []
 
-def sc_search(query, limit=5):
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": True,
-        "noplaylist": True,
-    }
+
+def sc_search(query, limit=10):
+    """Search SoundCloud - works without authentication."""
+    opts = dict(SC_OPTS)
     with yt_dlp.YoutubeDL(opts) as ydl:
         try:
             r = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"SoundCloud search failed: {e}")
             return []
     tracks = []
     for e in (r.get("entries") or []):
@@ -1043,14 +959,15 @@ def sc_search(query, limit=5):
             "channel": e.get("uploader") or "SoundCloud",
             "source": "soundcloud",
         })
+    logger.info(f"SoundCloud search: {len(tracks)} results for '{query}'")
     return tracks
 
 def search_all(query, limit=10):
-    """Search SoundCloud → YouTube → Spotify"""
+    """Search SoundCloud + Spotify (no YouTube)."""
     results = []
     seen_urls = set()
 
-    # 1. SoundCloud (найстабільніше, без блокування)
+    # 1. SoundCloud (основне джерело, без блокування)
     sc = sc_search(query, limit)
     for track in sc:
         if track["url"] not in seen_urls:
@@ -1059,18 +976,10 @@ def search_all(query, limit=10):
     if results:
         logger.info(f"SoundCloud found {len(results)} tracks")
 
-    # 2. YouTube (fallback, може блокувати)
-    if len(results) < limit:
-        yt = yt_search(query, limit)
-        for track in yt:
-            if track["url"] not in seen_urls:
-                seen_urls.add(track["url"])
-                results.append(track)
-
-    # 3. Spotify (якщо є credentials)
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET and len(results) < limit:
+    # 2. Spotify (якщо є credentials)
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         try:
-            spotify_tracks = search_spotify_tracks(query, limit=5)
+            spotify_tracks = search_spotify_tracks(query, limit=limit)
             for track in spotify_tracks:
                 if track["url"] not in seen_urls:
                     seen_urls.add(track["url"])
@@ -1113,17 +1022,14 @@ def search_spotify_tracks(query, limit=5):
         return []
 
 def artist_songs(artist, limit=50):
-    return yt_search(f"{artist} official audio", limit)
+    """Search artist songs on SoundCloud."""
+    return sc_search(f"{artist}", limit)
 
 def find_track_for_download(track_name, artist_name):
+    """Find track on SoundCloud or Spotify."""
     query = f"{artist_name} {track_name}"
-    result = yt_search(query, limit=3)
-    if result:
-        return {
-            "title": result[0]["title"],
-            "url": result[0]["url"],
-            "source": "youtube",
-        }
+
+    # 1. SoundCloud
     result = sc_search(query, limit=3)
     if result:
         return {
@@ -1131,13 +1037,20 @@ def find_track_for_download(track_name, artist_name):
             "url": result[0]["url"],
             "source": "soundcloud",
         }
-    result = yt_search(f"{query} youtube music", limit=3)
-    if result:
-        return {
-            "title": result[0]["title"],
-            "url": result[0]["url"],
-            "source": "youtube_music",
-        }
+
+    # 2. Spotify (якщо є credentials)
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        try:
+            spotify = search_spotify_tracks(query, limit=3)
+            if spotify:
+                return {
+                    "title": spotify[0]["title"],
+                    "url": spotify[0]["url"],
+                    "source": "spotify",
+                }
+        except Exception:
+            pass
+
     return None
 
 # ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
@@ -1397,14 +1310,7 @@ async def async_find_track(track_name, artist_name):
 
 # ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    # Знаходимо cookies файл тут (всередині функції)
-    cookies_file = None
-    if os.path.exists("youtube_cookies.txt"):
-        cookies_file = "youtube_cookies.txt"
-    elif os.path.exists("cookies.txt"):
-        cookies_file = "cookies.txt"
-    elif os.path.exists("/app/youtube_cookies.txt"):
-        cookies_file = "/app/youtube_cookies.txt"
+    """Download MP3 from SoundCloud or Spotify (no YouTube)."""
 
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
@@ -1425,14 +1331,6 @@ def download_mp3(url, out_dir, quality="192"):
         "file_access_retries": 3,
         "extractor_retries": 3,
     }
-
-    # Додаємо cookies для завантаження (можуть допомогти з age-restricted)
-    if cookies_file:
-        base_opts["cookies"] = cookies_file
-        logger.info(f"Using cookies for download: {cookies_file}")
-
-    # Перевіряємо чи це SoundCloud — там простіше
-    is_soundcloud = "soundcloud.com" in url or "snd.sc" in url
     last_error = None
     tried_clients = []
     for i, client in enumerate(YT_CLIENTS):
@@ -3148,6 +3046,10 @@ async def do_download(msg, url, title, artist, uid, ctx):
     limits = get_limits(uid)
     if quality not in limits["quality_options"]:
         quality = "192"
+
+    # Перевіряємо джерело
+    is_soundcloud = "soundcloud.com" in url or "snd.sc" in url
+    is_spotify = "spotify.com" in url or "open.spotify.com" in url
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
