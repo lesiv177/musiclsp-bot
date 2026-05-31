@@ -2951,14 +2951,8 @@ def scrape_genius_lyrics(url):
             lyrics = ""
             for match in alt_match:
                 text = re.sub(r'<[^>]+>', '', match)
-                text = re.sub(r'\[.*?\]', lambda m: "
-
-" + m.group(0) + "
-", text)
-                lyrics += text + "
-
-"
-            return lyrics.strip()
+                text = re.sub(r'\[.*?\]', lambda m: chr(10)+chr(10)+m.group(0)+chr(10), text)
+                lyrics += text + chr(10)+chr(10)
 
         return None
     except Exception as e:
