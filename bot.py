@@ -2851,17 +2851,17 @@ async def do_download(msg, url, title, artist, uid, ctx):
 
             url_id = cache_url(ctx.bot_data, url, title, artist)
             add_txts = {
-                "uk": "⭐ Додати в бібліотеку",
-                "ru": "⭐ Добавить в библиотеку",
-                "en": "⭐ Add to library",
-                "fr": "⭐ Ajouter à la bibliothèque",
+                "uk": "📚 Додати в бібліотеку",
+                "ru": "📚 Добавить в библиотеку",
+                "en": "📚 Add to library",
+                "fr": "📚 Ajouter à la bibliothèque",
             }
             add_txt = add_txts.get(l, add_txts["en"])
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            await msg.reply_text("✨", reply_markup=kb)
+            await msg.reply_text("📚", reply_markup=kb)
 
         except Exception as e:
             logger.error(f"Download error: {e}")
