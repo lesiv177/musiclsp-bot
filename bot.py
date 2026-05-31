@@ -1661,7 +1661,10 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if uid != ADMIN_ID:
         await update.message.reply_text("⛔ Access denied")
         return
+    await _show_admin_panel(update.message, uid)
 
+async def _show_admin_panel(msg, uid):
+    """Show admin panel inline."""
     l = get_lang(uid)
     texts = {
         "uk": "🔧 <b>Адмін панель</b>\n\nВибери дію:",
@@ -1669,7 +1672,7 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "en": "🔧 <b>Admin panel</b>\n\nChoose action:",
         "fr": "🔧 <b>Panneau admin</b>\n\nChoisis l'action:",
     }
-
+    back_labels = {"uk": "◀️ Назад", "ru": "◀️ Назад", "en": "◀️ Back", "fr": "◀️ Retour"}
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 Дати Premium", callback_data="adm:premium")],
         [InlineKeyboardButton("💿 Забрати Premium", callback_data="adm:unpremium")],
@@ -1677,9 +1680,12 @@ async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔍 Знайти юзера", callback_data="adm:find")],
         [InlineKeyboardButton("👥 Останні 20 юзерів", callback_data="adm:users")],
         [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
-        [back_btn(uid)],
+        [InlineKeyboardButton(back_labels.get(l, "◀️ Back"), callback_data="adm:panel")],
     ])
-    await update.message.reply_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
+    try:
+        await msg.edit_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
 
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -1814,6 +1820,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Admin callbacks
+    if data == "adm:panel":
+        await _show_admin_panel(q.message, uid)
+        return
+
     if data.startswith("adm:"):
         if uid != ADMIN_ID:
             await q.answer("⛔ No access", show_alert=True)
@@ -1847,13 +1857,13 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 name = u.get("username", "—")
                 joined = str(u.get("joined", "—"))[:10]
                 text += f"{i}. {status} <code>{u['id']}</code> @{name} ({joined})\n"
-            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="adm:panel")]]), parse_mode="HTML")
             return
 
         if data == "adm:stats":
             stats = get_global_stats()
             text = f"📊 <b>Статистика</b>\n\n👥 Всього: {stats['total']}\n💎 Premium: {stats['premium']}\n💿 Free: {stats['free']}"
-            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="adm:panel")]]), parse_mode="HTML")
             return
 
     # ZIP Albums (Premium)
