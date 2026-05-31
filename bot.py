@@ -313,11 +313,103 @@ def db():
         conn.row_factory = sqlite3.Row
         return conn
 
-def init_db():
-    if USE_POSTGRES:
-        init_postgres()
-    else:
-        init_sqlite()
+def init_postgres():
+    """Initialize PostgreSQL tables."""
+    conn = db()
+    try:
+        with conn.cursor() as c:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    lang TEXT DEFAULT 'uk',
+                    joined TIMESTAMP,
+                    is_premium BOOLEAN DEFAULT FALSE,
+                    premium_since TIMESTAMP,
+                    state TEXT DEFAULT ''
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS library (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    title TEXT,
+                    artist TEXT,
+                    url TEXT,
+                    kind TEXT DEFAULT 'track',
+                    added TIMESTAMP
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS history (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    title TEXT,
+                    artist TEXT,
+                    played TIMESTAMP
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS playlists (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    name TEXT,
+                    description TEXT,
+                    created TIMESTAMP,
+                    updated TIMESTAMP
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS playlist_tracks (
+                    id SERIAL PRIMARY KEY,
+                    playlist_id BIGINT,
+                    title TEXT,
+                    artist TEXT,
+                    url TEXT,
+                    duration TEXT,
+                    added TIMESTAMP
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS listening_stats (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    track_title TEXT,
+                    artist TEXT,
+                    duration_sec INTEGER,
+                    played_at TIMESTAMP,
+                    source TEXT DEFAULT 'download'
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS radio_sessions (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    seed_artist TEXT,
+                    seed_track TEXT,
+                    tracks_json TEXT,
+                    current_idx INTEGER DEFAULT 0,
+                    created TIMESTAMP,
+                    updated TIMESTAMP
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS recognized_tracks (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    title TEXT,
+                    artist TEXT,
+                    recognized_at TIMESTAMP,
+                    audio_hash TEXT
+                )
+            """)
+            conn.commit()
+            logger.info("✅ PostgreSQL tables initialized")
+    except Exception as e:
+        logger.error(f"PostgreSQL init error: {e}")
+        raise
+    finally:
+        conn.close()
 
 def init_sqlite():
     with closing(db()) as c:
