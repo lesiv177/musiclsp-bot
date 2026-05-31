@@ -3001,3 +3001,28 @@ async def search_lyrics(msg, query, uid, ctx):
                     parse_mode="HTML",
                     disable_web_page_preview=True
                 )
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    init_db()
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Хендлери команд
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("admin", cmd_admin))
+
+    # Хендлери callback
+    app.add_handler(CallbackQueryHandler(on_admin_cb, pattern="^adm:"))
+    app.add_handler(CallbackQueryHandler(on_callback))
+
+    # Хендлери повідомлень
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+
+    logger.info("🚀 MusicLSP v3.0 запускається...")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
