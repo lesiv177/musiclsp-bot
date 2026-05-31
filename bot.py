@@ -375,7 +375,8 @@ def db():
 
 def init_postgres():
     """Initialize PostgreSQL tables."""
-    conn = db()
+    db_url = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    conn = psycopg2.connect(db_url, sslmode='require')
     try:
         with conn.cursor() as c:
             c.execute("""
