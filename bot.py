@@ -1338,81 +1338,40 @@ def download_mp3(url, out_dir, quality="192"):
         "file_access_retries": 3,
         "extractor_retries": 3,
     }
-    last_error = None
-    tried_clients = []
-    for i, client in enumerate(YT_CLIENTS):
-        try:
-            opts = dict(base_opts)
-            opts["extractor_args"] = {"youtube": client}
-            client_name = client["player_client"]
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-            if info:
-                mp3_files = list(Path(out_dir).glob("*.mp3"))
-                if mp3_files:
-                    logger.info(
-                        f"Download success via {client_name}: {mp3_files[0].name}"
-                    )
-                    return str(mp3_files[0])
-                # Конвертація якщо не mp3
-                for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                    files = list(Path(out_dir).glob(ext))
-                    if files:
-                        input_file = str(files[0])
-                        output_file = os.path.join(
-                            out_dir, f"{files[0].stem}.mp3"
+
+    try:
+        with yt_dlp.YoutubeDL(base_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+        if info:
+            mp3_files = list(Path(out_dir).glob("*.mp3"))
+            if mp3_files:
+                logger.info(f"Download success: {mp3_files[0].name}")
+                return str(mp3_files[0])
+            # Конвертація якщо не mp3
+            for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
+                files = list(Path(out_dir).glob(ext))
+                if files:
+                    input_file = str(files[0])
+                    output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
+                    try:
+                        subprocess.run(
+                            [
+                                "ffmpeg",
+                                "-i", input_file,
+                                "-vn", "-ar", "44100", "-ac", "2",
+                                "-b:a", f"{quality}k", "-y", output_file,
+                            ],
+                            check=True, capture_output=True, timeout=60,
                         )
-                        try:
-                            subprocess.run(
-                                [
-                                    "ffmpeg",
-                                    "-i",
-                                    input_file,
-                                    "-vn",
-                                    "-ar",
-                                    "44100",
-                                    "-ac",
-                                    "2",
-                                    "-b:a",
-                                    f"{quality}k",
-                                    "-y",
-                                    output_file,
-                                ],
-                                check=True,
-                                capture_output=True,
-                                timeout=60,
-                            )
-                            if os.path.exists(output_file):
-                                os.remove(input_file)
-                                return output_file
-                        except Exception as conv_e:
-                            logger.warning(f"FFmpeg conversion failed: {conv_e}")
-                            return input_file
-        except Exception as e:
-            last_error = e
-            client_name = client["player_client"]
-            tried_clients.append(client_name)
-            err_str = str(e).lower()
-            if "sign in" in err_str or "login" in err_str:
-                logger.warning(f"{client_name}: Sign in required")
-            elif "bot" in err_str or "automated" in err_str:
-                logger.warning(f"{client_name}: Bot detection")
-            elif "unavailable" in err_str:
-                logger.warning(f"{client_name}: Video unavailable")
-            elif "age" in err_str:
-                logger.warning(f"{client_name}: Age restricted")
-            elif "private" in err_str:
-                logger.warning(f"{client_name}: Private video")
-            elif "copyright" in err_str or "blocked" in err_str:
-                logger.warning(f"{client_name}: Copyright/blocked")
-            else:
-                logger.warning(f"{client_name} failed: {str(e)[:100]}")
-            continue
-    logger.error(
-        f"All download attempts failed. Tried: {', '.join(tried_clients)}. "
-        f"Last error: {last_error}"
-    )
-    return None
+                        if os.path.exists(output_file):
+                            os.remove(input_file)
+                            return output_file
+                    except Exception as conv_e:
+                        logger.warning(f"FFmpeg conversion failed: {conv_e}")
+                        return input_file
+    except Exception as e:
+        logger.error(f"Download failed: {e}")
+        return None
 
 async def async_download_with_fallback(url, out_dir, quality="192"):
     result = await async_download(url, out_dir, quality)
