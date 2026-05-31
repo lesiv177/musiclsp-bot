@@ -27,7 +27,6 @@ import io
 import random
 import subprocess
 import re
-import shutil
 import zipfile
 from pathlib import Path
 from contextlib import closing
@@ -1558,15 +1557,8 @@ async def async_download_with_fallback(url, out_dir, quality="192"):
 
 def _alt_download(url, out_dir, quality="192"):
     opts = {
-        "format": "ba/b",
+        "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": quality,
-            }
-        ],
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
@@ -1576,9 +1568,10 @@ def _alt_download(url, out_dir, quality="192"):
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
         if info:
-            mp3_files = list(Path(out_dir).glob("*.mp3"))
-            if mp3_files:
-                return str(mp3_files[0])
+            for ext in ["*.mp3", "*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
+                files = list(Path(out_dir).glob(ext))
+                if files:
+                    return str(files[0])
     except Exception as e:
         logger.warning(f"Alternative download failed: {e}")
     return None
