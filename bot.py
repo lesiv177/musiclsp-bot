@@ -1032,7 +1032,7 @@ BASE_YTDL_OPTS = {
 # ─── Пошук YouTube/SoundCloud ─────────────────────────────────────────────────
 
 
-def sc_search(query, limit=10):
+def sc_search(query, limit=15):
     """Search SoundCloud - works without authentication."""
     opts = {
         "quiet": True,
@@ -1223,31 +1223,61 @@ def artist_songs(artist, limit=50):
     return sc_search(f"{artist}", limit)
 
 def find_track_for_download(track_name, artist_name):
-    """Find track on SoundCloud or Spotify."""
-    query = f"{artist_name} {track_name}"
+    """Find track on SoundCloud or Spotify with multiple fallbacks."""
 
-    # 1. SoundCloud
-    result = sc_search(query, limit=3)
-    if result:
-        return {
-            "title": result[0]["title"],
-            "url": result[0]["url"],
-            "source": "soundcloud",
-        }
+    # Різні варіанти запитів
+    queries = [
+        f"{artist_name} {track_name}",
+        f"{track_name} {artist_name}",
+        track_name,
+        artist_name,
+    ]
 
-    # 2. Spotify (якщо є credentials)
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    for query in queries:
+        # 1. SoundCloud
         try:
-            spotify = search_spotify_tracks(query, limit=3)
-            if spotify:
+            result = sc_search(query, limit=5)
+            if result:
+                # Перевіримо чи трек справді підходить
+                for r in result:
+                    title_lower = r["title"].lower()
+                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                        return {
+                            "title": r["title"],
+                            "url": r["url"],
+                            "source": "soundcloud",
+                        }
+                # Якщо не знайшли точний — беремо перший
                 return {
-                    "title": spotify[0]["title"],
-                    "url": spotify[0]["url"],
-                    "source": "spotify",
+                    "title": result[0]["title"],
+                    "url": result[0]["url"],
+                    "source": "soundcloud",
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"SC search failed for '{query}': {e}")
 
+        # 2. Spotify (якщо є credentials)
+        if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+            try:
+                spotify = search_spotify_tracks(query, limit=5)
+                if spotify:
+                    for s in spotify:
+                        title_lower = s["title"].lower()
+                        if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                            return {
+                                "title": s["title"],
+                                "url": s["url"],
+                                "source": "spotify",
+                            }
+                    return {
+                        "title": spotify[0]["title"],
+                        "url": spotify[0]["url"],
+                        "source": "spotify",
+                    }
+            except Exception as e:
+                logger.warning(f"Spotify search failed for '{query}': {e}")
+
+    logger.error(f"Could not find track: {artist_name} - {track_name}")
     return None
 
 # ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
