@@ -996,6 +996,102 @@ def search_all(query, limit=10):
 
     return results[:limit + 5]
 
+
+# ─── Пошук за жанром (Premium) ──────────────────────────────────────────────
+async def show_genres(msg, uid, ctx):
+    """Show genre selection keyboard."""
+    l = get_lang(uid)
+    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
+
+    kb = []
+    row = []
+    for key, name in genres.items():
+        row.append(InlineKeyboardButton(name, callback_data=f"genre|{key}"))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+
+    kb.append([back_btn(uid)])
+
+    text = {
+        "uk": "🎵 <b>Обери жанр:</b>",
+        "ru": "🎵 <b>Выбери жанр:</b>",
+        "en": "🎵 <b>Choose a genre:</b>",
+    }.get(l, "🎵 <b>Choose a genre:</b>")
+
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+async def search_by_genre(msg, genre_key, uid, ctx):
+    """Search popular tracks by genre."""
+    l = get_lang(uid)
+    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
+    genre_name = genres.get(genre_key, genre_key)
+
+    status = await msg.reply_text(
+        f"🔍 Шукаю <b>{genre_name}</b>…", parse_mode="HTML"
+    )
+
+    # Search queries for different genres
+    genre_queries = {
+        "pop": "popular pop music 2024",
+        "rock": "best rock music 2024",
+        "hiphop": "top hip hop rap 2024",
+        "electronic": "electronic dance music EDM 2024",
+        "jazz": "best jazz music",
+        "classical": "classical music masterpieces",
+        "metal": "heavy metal best songs",
+        "rnb": "R&B soul music 2024",
+        "country": "country music hits 2024",
+        "folk": "folk acoustic music",
+        "blues": "blues music classics",
+        "reggae": "reggae music best",
+        "latin": "latin pop reggaeton 2024",
+        "kpop": "K-pop hits 2024",
+        "indie": "indie music 2024",
+        "punk": "punk rock music",
+        "disco": "disco funk classics",
+        "funk": "funk music grooves",
+        "soul": "soul music classics",
+        "techno": "techno house music 2024",
+    }
+
+    query = genre_queries.get(genre_key, f"{genre_key} music 2024")
+    tracks = await async_search(query, limit=15)
+
+    if not tracks:
+        await status.edit_text("😔 Нічого не знайдено.")
+        return
+
+    await status.delete()
+
+    # Show results
+    ck = f"genre_{uid}_{genre_key}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
+    ctx.bot_data.setdefault("cache", {})[ck] = tracks
+
+    kb = []
+    for i, t in enumerate(tracks[:10]):
+        icon = "🎵" if t.get("source") == "soundcloud" else "🟢"
+        kb.append([
+            InlineKeyboardButton(
+                f"{icon} {t['title'][:40]} ({t['duration']})",
+                callback_data=f"dl|{i}|{ck}"
+            )
+        ])
+
+    kb.append([back_btn(uid)])
+
+    text = f"🎵 <b>{genre_name}</b> — знайдено {len(tracks)} треків:\n\nОбери пісню 👇"
+
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 def search_spotify_tracks(query, limit=5):
     """Search tracks in Spotify."""
     token = get_spotify_token()
@@ -1656,23 +1752,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Recognition (Premium) — чесне повідомлення
-    if data == "m:recognition":
-        if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
-            return
-        set_state(uid, "recognition_input")
-        prompts = {
-            "uk": "🎵 Надішли мені голосове повідомлення або аудіо файл для розпізнавання музики.\n\n<i>Примітка: розпізнавання працює через зовнішній сервіс і може бути не 100% точним.</i>",
-            "ru": "🎵 Пришли мне голосовое сообщение или аудиофайл для распознавания музыки.\n\n<i>Примечание: распознавание работает через внешний сервис и может быть не 100% точным.</i>",
-            "en": "🎵 Send me a voice message or audio file to recognize music.\n\n<i>Note: recognition works via external service and may not be 100% accurate.</i>",
-        }
-        await q.message.edit_text(
-            prompts.get(l, prompts["en"]),
-            reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]),
-            parse_mode="HTML",
-        )
-        return
+
 
     # Statistics (Premium)
     if data == "m:stats":
@@ -2115,72 +2195,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     set_state(uid, "")
     await do_search_paged(update, text, uid, ctx, page=0, edit=False)
 
-# ─── Voice/Audio для розпізнавання — ВИПРАВЛЕНО: чесний fallback ────────────
-async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    l = get_lang(uid)
-    if not is_premium(uid):
-        await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
-        return
 
-    status = await update.message.reply_text(
-        "🎵 <b>Розпізнаю музику...</b>\n\n<i>Примітка: це пошук за схожістю, не справжнє розпізнавання.</i>",
-        parse_mode="HTML"
-    )
-
-    try:
-        # Завантажуємо аудіо
-        if update.message.voice:
-            file = await update.message.voice.get_file()
-        elif update.message.audio:
-            file = await update.message.audio.get_file()
-        else:
-            await status.edit_text("❌ Надішли голосове або аудіо.")
-            return
-
-        with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
-            await file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
-
-        # Чесний fallback: шукаємо популярну музику як приклад
-        # У реальності тут треба інтегрувати Shazam/ACRCloud API
-        demo_queries = ["popular song 2024", "hit music", "top track"]
-        query = random.choice(demo_queries)
-        tracks = await async_search(query, limit=1)
-
-        if tracks:
-            t = tracks[0]
-            now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            with closing(db()) as c:
-                c.execute(
-                    "INSERT INTO recognized_tracks(user_id,title,artist,recognized_at,audio_hash) VALUES(?,?,?,?,?)",
-                    (uid, t["title"], t.get("channel", ""), now, hashlib.md5(tmp_path.encode()).hexdigest()[:16])
-                )
-                c.commit()
-
-            await status.delete()
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(
-                    "⬇️ Завантажити",
-                    callback_data=f"dlurl|{cache_url(ctx.bot_data, t['url'], t['title'], t.get('channel', ''))}|{t['title'][:30]}|{t.get('channel', '')[:20]}"
-                )],
-                [back_btn(uid)]
-            ])
-            await update.message.reply_text(
-                f"🎵 <b>Результат пошуку (демо):</b>\n\n"
-                f"🎤 <b>{t['title']}</b>\n"
-                f"👤 {t.get('channel', '—')}\n"
-                f"⏱ {t['duration']}\n\n"
-                f"<i>💡 Для справжнього розпізнавання потрібен Shazam API</i>",
-                reply_markup=kb, parse_mode="HTML"
-            )
-        else:
-            await status.edit_text("😔 Не вдалося знайти схожу музику.")
-
-        os.unlink(tmp_path)
-    except Exception as e:
-        logger.error(f"Recognition error: {e}")
-        await status.edit_text("❌ Помилка обробки аудіо. Спробуй інший файл.")
 
 # ─── Пошук з пагінацією ───────────────────────────────────────────────────────
 async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
@@ -2653,7 +2668,7 @@ async def show_sub(msg, uid, ctx=None):
         ])
         kb.append([
             InlineKeyboardButton("📻 Радіо", callback_data="m:radio"),
-            InlineKeyboardButton("🎵 Розпізнавання", callback_data="m:recognition")
+            InlineKeyboardButton("🎵 Жанри", callback_data="m:genres")
         ])
         kb.append([
             InlineKeyboardButton("📊 Статистика", callback_data="m:stats"),
@@ -2885,7 +2900,7 @@ def search_genius_song(query):
         return None
 
 def get_genius_lyrics(song_id):
-    """Отримує текст пісні з Genius API."""
+    """Отримує текст пісні з Genius API (тільки метадані, текст через scraping)."""
     if not GENIUS_TOKEN:
         return None
     try:
@@ -2896,18 +2911,63 @@ def get_genius_lyrics(song_id):
         data = resp.json()
         song = data.get("response", {}).get("song", {})
 
-        description = song.get("description", {}).get("plain", "")
-        lyrics_state = song.get("lyrics_state", "unknown")
-
         return {
             "title": song.get("title", "Unknown"),
             "artist": song.get("primary_artist", {}).get("name", "Unknown"),
             "url": song.get("url", ""),
-            "description": description[:500] if description else "",
-            "lyrics_state": lyrics_state,
+            "lyrics_state": song.get("lyrics_state", "unknown"),
         }
     except Exception as e:
         logger.error(f"Genius lyrics error: {e}")
+        return None
+
+def scrape_genius_lyrics(url):
+    """Scrape lyrics from Genius page (no API needed for text)."""
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+
+        # Шукаємо lyrics в HTML
+        import re
+        # Genius lyrics are in divs with data-lyrics-container="true"
+        lyrics_match = re.findall(r'<div[^>]*data-lyrics-container="true"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if lyrics_match:
+            lyrics = ""
+            for match in lyrics_match:
+                # Remove HTML tags
+                text = re.sub(r'<[^>]+>', '', match)
+                # Remove [Verse], [Chorus] etc styling
+                text = re.sub(r'\[.*?\]', lambda m: f"
+
+{m.group(0)}
+", text)
+                lyrics += text + "
+
+"
+            return lyrics.strip()
+
+        # Alternative: look for Lyrics__Container
+        alt_match = re.findall(r'<div[^>]*class="Lyrics__Container[^"]*"[^>]*>(.*?)</div>', html, re.DOTALL)
+        if alt_match:
+            lyrics = ""
+            for match in alt_match:
+                text = re.sub(r'<[^>]+>', '', match)
+                text = re.sub(r'\[.*?\]', lambda m: f"
+
+{m.group(0)}
+", text)
+                lyrics += text + "
+
+"
+            return lyrics.strip()
+
+        return None
+    except Exception as e:
+        logger.error(f"Scrape lyrics error: {e}")
         return None
 
 async def search_lyrics(msg, query, uid, ctx):
@@ -2920,25 +2980,61 @@ async def search_lyrics(msg, query, uid, ctx):
     song = await loop.run_in_executor(None, search_genius_song, query)
 
     if song:
-        lyrics_data = await loop.run_in_executor(None, get_genius_lyrics, song["id"])
-        if lyrics_data:
-            text = (
-                f"🎤 <b>{lyrics_data['title']}</b>\n"
-                f"👤 {lyrics_data['artist']}\n\n"
-            )
-            if lyrics_data['description']:
-                text += f"<i>{lyrics_data['description']}</i>\n\n"
-            text += f"🔗 <a href='{lyrics_data['url']}'>Відкрити повний текст на Genius</a>\n\n"
-            text += "<i>💡 Повний текст доступний за посиланням вище (Genius не надає API для повного тексту)</i>"
+        # Спробуємо отримати текст через scraping
+        lyrics_text = await loop.run_in_executor(None, scrape_genius_lyrics, song["url"])
 
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Відкрити на Genius", url=lyrics_data['url'])],
-                [back_btn(uid)]
-            ])
-            await status.edit_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+        if lyrics_text:
+            # Розбиваємо на частини якщо текст довгий
+            max_len = 3500  # Telegram limit ~4096
+
+            header = f"🎤 <b>{song['title']}</b>\n👤 {song['artist']}\n\n"
+
+            if len(lyrics_text) <= max_len:
+                text = header + lyrics_text.replace('
+', '\n')
+                await status.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Відкрити на Genius", url=song['url'])],
+                        [back_btn(uid)]
+                    ]),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+            else:
+                # Надсилаємо першу частину
+                text = header + lyrics_text[:max_len].replace('
+', '\n') + "\n\n<i>... (текст обрізано)</i>"
+                await status.edit_text(
+                    text,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Повний текст на Genius", url=song['url'])],
+                        [back_btn(uid)]
+                    ]),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True
+                )
+            return
+        else:
+            # Не вдалося отримати текст, надсилаємо посилання
+            text = (
+                f"🎤 <b>{song['title']}</b>\n"
+                f"👤 {song['artist']}\n\n"
+                f"<i>Не вдалося отримати текст автоматично.</i>\n"
+                f"Відкрий посилання нижче для перегляду тексту:"
+            )
+            await status.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Текст на Genius", url=song['url'])],
+                    [back_btn(uid)]
+                ]),
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
             return
 
-    # Fallback — якщо Genius не спрацював
+    # Fallback — не знайдено
     await status.edit_text(
         f"🎤 <b>Текст пісні:</b> {query}\n\n"
         f"<i>Не вдалося знайти текст через Genius API.</i>\n\n"
@@ -3408,9 +3504,7 @@ def main():
     # Хендлери повідомлень
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    # Хендлери голосових/аудіо для розпізнавання
-    app.add_handler(MessageHandler(filters.VOICE, on_voice))
-    app.add_handler(MessageHandler(filters.AUDIO, on_voice))
+
 
     logger.info("🚀 MusicLSP v3.0 запускається...")
     app.run_polling(drop_pending_updates=True)
