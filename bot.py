@@ -1724,10 +1724,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:albums":
         set_state(uid, "album_search")
         prompts = {
-            "uk": "💿 Введи назву альбому:\n\n<i>Приклади:</i>\n• <code>Yanix SS 20</code>",
-            "ru": "💿 Введи название альбома:\n\n<i>Примеры:</i>\n• <code>Yanix SS 20</code>",
-            "en": "💿 Enter album name:\n\n<i>Examples:</i>\n• <code>Yanix SS 20</code>",
-            "fr": "💿 Entre le nom de l'album:\n\n<i>Exemples:</i>\n• <code>Yanix SS 20</code>",
+            "uk": "💿 Введи назву альбому:\n\n<i>Приклади:</i>\n* <code>Yanix SS 20</code>",
+            "ru": "💿 Введи название альбома:\n\n<i>Примеры:</i>\n* <code>Yanix SS 20</code>",
+            "en": "💿 Enter album name:\n\n<i>Examples:</i>\n* <code>Yanix SS 20</code>",
+            "fr": "💿 Entre le nom de l'album:\n\n<i>Exemples:</i>\n* <code>Yanix SS 20</code>",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2333,8 +2333,8 @@ async def do_mb_album_search(update, query, uid, ctx):
         await msg.edit_text(
             "😔 Альбоми не знайдено.\n\n"
             "💡 Спробуй:\n"
-            "• Точнішу назву: <code>Yanix SS 20</code>\n"
-            "• Формат: <code>Артист НазваАльбому</code>",
+            "* Точнішу назву: <code>Yanix SS 20</code>\n"
+            "* Формат: <code>Артист НазваАльбому</code>",
             parse_mode="HTML"
         )
         return
@@ -2812,10 +2812,10 @@ async def show_profile(msg, uid):
         text += f"⭐ Premium з: {premium_since}\n"
     text += (
         f"\n📊 <b>Статистика:</b>\n"
-        f"• Скачано: {stats['dl']}\n"
-        f"• В бібліотеці: {stats['lib']}\n"
-        f"• Унікальних артистів: {stats['unique_artists']}\n"
-        f"• Час прослуховування: {listen_hours} год"
+        f"* Скачано: {stats['dl']}\n"
+        f"* В бібліотеці: {stats['lib']}\n"
+        f"* Унікальних артистів: {stats['unique_artists']}\n"
+        f"* Час прослуховування: {listen_hours} год"
     )
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
@@ -2840,20 +2840,20 @@ async def show_sub(msg, uid, ctx=None):
     if not premium:
         text += (
             f"💿 <b>Free:</b>\n"
-            f"• Пошук та завантаження MP3 (192kbps)\n"
-            f"• Бібліотека: до 20 записів\n"
-            f"• Всі пісні артиста: до 10\n\n"
+            f"* Пошук та завантаження MP3 (192kbps)\n"
+            f"* Бібліотека: до 20 записів\n"
+            f"* Всі пісні артиста: до 10\n\n"
             f"💎 <b>Premium:</b>\n"
-            f"• Якість: 192 / 320 kbps\n"
-            f"• Бібліотека: необмежана\n"
-            f"• ZIP альбоми\n"
-            f"• Плейлисти\n"
-            f"• Радіо режим\n"
-            f"• Розпізнавання музики\n"
-            f"• Тексти пісень\n"
-            f"• Пошук схожої музики\n"
-            f"• Batch download: 20/50/100\n"
-            f"• Розширена статистика\n\n"
+            f"* Якість: 192 / 320 kbps\n"
+            f"* Бібліотека: необмежана\n"
+            f"* ZIP альбоми\n"
+            f"* Плейлисти\n"
+            f"* Радіо режим\n"
+            f"* Розпізнавання музики\n"
+            f"* Тексти пісень\n"
+            f"* Пошук схожої музики\n"
+            f"* Batch download: 20/50/100\n"
+            f"* Розширена статистика\n\n"
             f"💰 Оформити Premium: {AUTH_BOT}"
         )
     else:
@@ -3072,106 +3072,34 @@ async def start_radio(msg, seed, uid, ctx):
 
 # ─── Статистика прослуховування ───────────────────────────────────────────────
 async def show_stats(msg, uid):
-    """Show listening statistics."""
     l = get_lang(uid)
-    stats_7d = get_listening_stats(uid, 7)
-    stats_30d = get_listening_stats(uid, 30)
-
-    texts = {
-        "uk": {"title": "📊 Статистика", "d7": "📅 За 7 днів", "d30": "📅 За 30 днів", "tracks": "🎵 Треків", "top_artists": "🎤 Топ артисти", "top_tracks": "🎵 Топ треки", "times": "разів"},
-        "ru": {"title": "📊 Статистика", "d7": "📅 За 7 дней", "d30": "📅 За 30 дней", "tracks": "🎵 Треков", "top_artists": "🎤 Топ артисты", "top_tracks": "🎵 Топ треки", "times": "раз"},
-        "en": {"title": "📊 Statistics", "d7": "📅 Last 7 days", "d30": "📅 Last 30 days", "tracks": "🎵 Tracks", "top_artists": "🎤 Top artists", "top_tracks": "🎵 Top tracks", "times": "times"},
-        "fr": {"title": "📊 Statistiques", "d7": "📅 7 derniers jours", "d30": "📅 30 derniers jours", "tracks": "🎵 Morceaux", "top_artists": "🎤 Top artistes", "top_tracks": "🎵 Top morceaux", "times": "fois"},
+    s7 = get_listening_stats(uid, 7)
+    s30 = get_listening_stats(uid, 30)
+    txts = {
+        "uk": {"t": "📊 Статистика", "d7": "📅 7 днів", "d30": "📅 30 днів", "tr": "🎵 Треків", "ta": "🎤 Топ артисти", "tt": "🎵 Топ треки", "tm": "разів"},
+        "ru": {"t": "📊 Статистика", "d7": "📅 7 дней", "d30": "📅 30 дней", "tr": "🎵 Треков", "ta": "🎤 Топ артисты", "tt": "🎵 Топ треки", "tm": "раз"},
+        "en": {"t": "📊 Statistics", "d7": "📅 7 days", "d30": "📅 30 days", "tr": "🎵 Tracks", "ta": "🎤 Top artists", "tt": "🎵 Top tracks", "tm": "times"},
+        "fr": {"t": "📊 Statistiques", "d7": "📅 7 jours", "d30": "📅 30 jours", "tr": "🎵 Morceaux", "ta": "🎤 Top artistes", "tt": "🎵 Top morceaux", "tm": "fois"},
     }
-    t = texts.get(l, texts["en"])
-
-    text = f"{t['title']}\n\n{t['d7']}:\n  • {t['tracks']}: <b>{stats_7d['total']}</b>\n\n{t['d30']}:\n  • {t['tracks']}: <b>{stats_30d['total']}</b>\n\n"
-
-    if stats_30d['top_artists']:
-        text += f"{t['top_artists']}:\n"
-        for i, (artist, count) in enumerate(stats_30d['top_artists'][:5], 1):
-            text += f"  {i}. <b>{artist}</b> — {count} {t['times']}\n"
-        text += "\n"
-
-    if stats_30d['top_tracks']:
-        text += f"{t['top_tracks']}:\n"
-        for i, (title, artist, count) in enumerate(stats_30d['top_tracks'][:5], 1):
-            text += f"  {i}. <b>{title}</b> — {artist} ({count} {t['times']})\n"
-
+    t = txts.get(l, txts["en"])
+    nl = chr(10)
+    txt = t["t"] + nl + nl
+    txt += t["d7"] + ":" + nl + "  * " + t["tr"] + ": <b>" + str(s7["total"]) + "</b>" + nl + nl
+    txt += t["d30"] + ":" + nl + "  * " + t["tr"] + ": <b>" + str(s30["total"]) + "</b>" + nl + nl
+    if s30["top_artists"]:
+        txt += t["ta"] + ":" + nl
+        for i, (a, c) in enumerate(s30["top_artists"][:5], 1):
+            txt += "  " + str(i) + ". <b>" + str(a) + "</b> - " + str(c) + " " + t["tm"] + nl
+        txt += nl
+    if s30["top_tracks"]:
+        txt += t["tt"] + ":" + nl
+        for i, (ti, a, c) in enumerate(s30["top_tracks"][:5], 1):
+            txt += "  " + str(i) + ". <b>" + str(ti) + "</b> - " + str(a) + " (" + str(c) + " " + t["tm"] + ")" + nl
     kb = InlineKeyboardMarkup([[back_btn(uid)]])
     try:
-        await msg.edit_text(text[:4096], reply_markup=kb, parse_mode="HTML")
+        await msg.edit_text(txt[:4096], reply_markup=kb, parse_mode="HTML")
     except Exception:
-        await msg.reply_text(text[:4096], reply_markup=kb, parse_mode="HTML")
-
-{t['d7']}:
-  • {t['tracks']}: <b>{stats_7d['total']}</b>
-
-{t['d30']}:
-  • {t['tracks']}: <b>{stats_30d['total']}</b>
-
-"
-
-    if stats_30d['top_artists']:
-        text += f"{t['top_artists']}:
-"
-        for i, (artist, count) in enumerate(stats_30d['top_artists'][:5], 1):
-            text += f"  {i}. <b>{artist}</b> — {count} {t['times']}
-"
-        text += "
-"
-
-    if stats_30d['top_tracks']:
-        text += f"{t['top_tracks']}:
-"
-        for i, (title, artist, count) in enumerate(stats_30d['top_tracks'][:5], 1):
-            text += f"  {i}. <b>{title}</b> — {artist} ({count} {t['times']})
-"
-
-    kb = InlineKeyboardMarkup([[back_btn(uid)]])
-    try:
-        await msg.edit_text(text[:4096], reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text[:4096], reply_markup=kb, parse_mode="HTML")
-"
-        f"{t['d7']}:
-"
-        f"  • {t['tracks']}: <b>{stats_7d['total']}</b>
-
-"
-        f"{t['d30']}:
-"
-        f"  • {t['tracks']}: <b>{stats_30d['total']}</b>
-
-"
-    )
-
-    if stats_30d['top_artists']:
-        text += f"{t['top_artists']}:
-"
-        for i, (artist, count) in enumerate(stats_30d['top_artists'][:5], 1):
-            text += f"  {i}. <b>{artist}</b> — {count} {t['times']}
-"
-        text += "
-"
-
-    if stats_30d['top_tracks']:
-        text += f"{t['top_tracks']}:
-"
-        for i, (title, artist, count) in enumerate(stats_30d['top_tracks'][:5], 1):
-            text += f"  {i}. <b>{title}</b> — {artist} ({count} {t['times']})
-"
-
-    kb = InlineKeyboardMarkup([[back_btn(uid)]])
-    try:
-        await msg.edit_text(text[:4096], reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text[:4096], reply_markup=kb, parse_mode="HTML")
-
-# ─── Тексти пісень — ВИПРАВЛЕНО: реальний Genius API ─────────────────────────
-
-
-
+        await msg.reply_text(txt[:4096], reply_markup=kb, parse_mode="HTML")
 
 async def ai_recommend(msg, query, uid, ctx):
     """Find similar music based on artist or genre."""
