@@ -1565,11 +1565,10 @@ def artist_songs(artist, limit=50):
 
 def find_track_for_download(track_name, artist_name):
     """Find track URL for download. Chain: Jamendo → Deezer → SoundCloud.
-
-    IMPORTANT: Never returns Spotify URLs because yt-dlp cannot download
-    from Spotify without a premium account. Spotify is only used for search/metadata.
+    Пробує 4 варіанти запитів для кожного джерела.
     """
 
+    # 4 варіанти запитів
     queries = [
         f"{artist_name} {track_name}",
         f"{track_name} {artist_name}",
@@ -1577,97 +1576,64 @@ def find_track_for_download(track_name, artist_name):
         artist_name,
     ]
 
+    # Джерела пошуку
+    search_sources = [
+        ("jamendo", lambda q: jamendo_search(q, limit=5)),
+        ("deezer", lambda q: dz_search_tracks(q, limit=5)),
+        ("soundcloud", lambda q: sc_search(q, limit=5)),
+    ]
+
     for query in queries:
-        # 1. Jamendo (primary source - free music, stable API)
-        try:
-            result = jamendo_search(query, limit=5)
-            if result:
-                for r in result:
-                    title_lower = r["title"].lower()
-                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                        return {
-                            "title": r["title"],
-                            "url": r["url"],
-                            "source": "jamendo",
-                        }
-                return {
-                    "title": result[0]["title"],
-                    "url": result[0]["url"],
-                    "source": "jamendo",
-                }
-        except Exception as e:
-            logger.warning(f"Jamendo search failed for '{query}': {e}")
+        logger.info(f"Searching: '{query}'")
 
-        # 2. Deezer (secondary source - public API, some tracks have direct URLs)
-        try:
-            dz = dz_search_tracks(query, limit=5)
-            if dz:
-                for d in dz:
-                    title_lower = d["title"].lower()
-                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                        return {
-                            "title": d["title"],
-                            "url": d["url"],
-                            "source": "deezer",
-                        }
-                return {
-                    "title": dz[0]["title"],
-                    "url": dz[0]["url"],
-                    "source": "deezer",
-                }
-        except Exception as e:
-            logger.warning(f"Deezer search failed for '{query}': {e}")
-
-        # 3. SoundCloud (last resort - often 404 errors)
-        try:
-            result = sc_search(query, limit=5)
-            if result:
-                for r in result:
-                    title_lower = r["title"].lower()
-                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                        return {
-                            "title": r["title"],
-                            "url": r["url"],
-                            "source": "soundcloud",
-                        }
-                return {
-                    "title": result[0]["title"],
-                    "url": result[0]["url"],
-                    "source": "soundcloud",
-                }
-        except Exception as e:
-            logger.warning(f"SC search failed for '{query}': {e}")
-
-        # 4. Spotify - ONLY for finding track info, then search that on Jamendo/Deezer
-        # NEVER return Spotify URLs directly - yt-dlp can't download them
-        if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        for source_name, source_func in search_sources:
             try:
-                spotify = search_spotify_tracks(query, limit=5)
-                if spotify:
-                    for s in spotify:
-                        title_lower = s["title"].lower()
-                        if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                            # Found on Spotify - now search this exact title on Jamendo
-                            jm_fallback = jamendo_search(s["title"], limit=3)
-                            if jm_fallback:
-                                return {
-                                    "title": jm_fallback[0]["title"],
-                                    "url": jm_fallback[0]["url"],
-                                    "source": "jamendo",
-                                }
-                            # Try Deezer fallback
-                            dz_fallback = dz_search_tracks(s["title"], limit=3)
-                            if dz_fallback:
-                                return {
-                                    "title": dz_fallback[0]["title"],
-                                    "url": dz_fallback[0]["url"],
-                                    "source": "deezer",
-                                }
-                            break
-            except Exception as e:
-                logger.warning(f"Spotify fallback search failed for '{query}': {e}")
+                result = source_func(query)
+                if result:
+                    # Шукаємо точне співпадіння
+                    for r in result:
+                        title_lower = r["title"].lower()
+                        if track_name.lower() in title_lower:
+                            logger.info(f"Found exact match in {source_name}: {r['title']}")
+                            return {
+                                "title": r["title"],
+                                "url": r["url"],
+                                "source": source_name,
+                            }
 
-    logger.error(f"Could not find track: {artist_name} - {track_name}")
+                    # Якщо точного співпадіння нема — беремо перший результат
+                    logger.info(f"Found approximate match in {source_name}: {result[0]['title']}")
+                    return {
+                        "title": result[0]["title"],
+                        "url": result[0]["url"],
+                        "source": source_name,
+                    }
+            except Exception as e:
+                logger.warning(f"{source_name} search failed for '{query}': {e}")
+                continue
+
+    # Якщо нічого не знайшли через 4 варіанти — пробуємо Spotify як останній шанс
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        try:
+            spotify = search_spotify_tracks(f"{artist_name} {track_name}", limit=5)
+            if spotify:
+                for s in spotify:
+                    # Знайшли на Spotify — шукаємо цю назву на інших джерелах
+                    for source_name, source_func in search_sources:
+                        try:
+                            fallback = source_func(s["title"], limit=3)
+                            if fallback:
+                                return {
+                                    "title": fallback[0]["title"],
+                                    "url": fallback[0]["url"],
+                                    "source": source_name,
+                                }
+                        except Exception:
+                            continue
+        except Exception as e:
+            logger.warning(f"Spotify fallback failed: {e}")
+
+    logger.error(f"Could not find track after all attempts: {artist_name} - {track_name}")
     return None
 
 # ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
@@ -2110,8 +2076,56 @@ async def show_deezer_album(msg, album_id, uid, ctx):
 
 # ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    """Download MP3 from SoundCloud, Deezer or Spotify."""
+    """Download MP3 from URL. Jamendo — напряму, інші — через yt-dlp."""
 
+    # Якщо Jamendo — скачуємо напряму без yt-dlp (немає DRM)
+    if "jamendo.com" in url or "audiodownload" in url:
+        try:
+            import requests
+            resp = requests.get(url, timeout=30, stream=True)
+            resp.raise_for_status()
+
+            # Визначаємо розширення
+            ext = ".mp3"
+            content_type = resp.headers.get("content-type", "")
+            if "audio/mpeg" in content_type:
+                ext = ".mp3"
+            elif "audio/ogg" in content_type:
+                ext = ".ogg"
+
+            filename = f"track{ext}"
+            filepath = os.path.join(out_dir, filename)
+
+            with open(filepath, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            # Конвертуємо в MP3 якщо потрібно
+            if ext != ".mp3":
+                output_file = os.path.join(out_dir, "track.mp3")
+                try:
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-i", filepath,
+                            "-vn", "-ar", "44100", "-ac", "2",
+                            "-b:a", f"{quality}k", "-y", output_file,
+                        ],
+                        check=True, capture_output=True, timeout=60,
+                    )
+                    if os.path.exists(output_file):
+                        os.remove(filepath)
+                        return output_file
+                except Exception:
+                    return filepath
+
+            return filepath
+        except Exception as e:
+            logger.warning(f"Jamendo direct download failed: {e}")
+            # Падаємо вниз до yt-dlp
+
+    # Для всіх інших джерел — yt-dlp
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
@@ -2633,14 +2647,55 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
             return
         track = album_data["tracks"][track_idx]
-        # Завжди шукаємо трек за назвою (як при звичайному пошуку), а не скачуємо напряму з альбому
+
+        # СПОЧАТКУ пробуємо напряму з URL альбому
+        if track.get("url"):
+            status = await q.message.reply_text(
+                f"⬇️ <b>{track['name']}</b>…", parse_mode="HTML"
+            )
+            try:
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = await async_download_with_fallback(track["url"], tmp, ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY))
+                    if path and os.path.exists(path):
+                        size_mb = os.path.getsize(path) / 1024 / 1024
+                        if size_mb <= MAX_MB:
+                            with open(path, "rb") as f:
+                                await q.message.reply_audio(audio=f, filename=f"{track['name'][:50]}.mp3")
+                            await status.delete()
+                            add_history(uid, track["name"], track["artists"])
+                            return
+            except Exception as e:
+                logger.warning(f"Direct download failed for {track['name']}: {e}")
+                pass  # Якщо не вийшло — йдемо до пошуку
+
+        # ЯКЩО НЕ ВИЙШЛО — шукаємо за назвою 4 варіантами
         status = await q.message.reply_text(
             f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
         )
-        result = await async_find_track(track["name"], track["artists"])
+
+        search_queries = [
+            f"{track['artists']} {track['name']}",
+            f"{track['name']} {track['artists']}",
+            track["name"],
+            track["artists"],
+        ]
+
+        result = None
+        for query in search_queries:
+            if result:
+                break
+            try:
+                result = await async_find_track(track["name"], track["artists"])
+                if result:
+                    break
+            except Exception as e:
+                logger.warning(f"Search attempt failed: {e}")
+                continue
+
         if not result:
             await status.delete()
             return
+
         await status.delete()
         await do_download(
             q.message, result["url"], track["name"], track["artists"], uid, ctx
@@ -2674,13 +2729,65 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
             return
         track = album_data["tracks"][track_idx]
+
+        # СПОЧАТКУ пробуємо напряму (Spotify не має прямих URL для скачування, тому одразу шукаємо)
         status = await q.message.reply_text(
             f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
         )
-        result = await async_find_track(track["name"], track["artists"])
+
+        # 4 варіанти пошуку
+        search_queries = [
+            f"{track['artists']} {track['name']}",
+            f"{track['name']} {track['artists']}",
+            track["name"],
+            track["artists"],
+        ]
+
+        result = None
+        for query in search_queries:
+            if result:
+                break
+            try:
+                # Шукаємо через різні джерела
+                sources = [
+                    lambda q: jamendo_search(q, 5),
+                    lambda q: dz_search_tracks(q, 5),
+                    lambda q: sc_search(q, 5),
+                ]
+                for src in sources:
+                    try:
+                        res = src(query)
+                        if res:
+                            for r in res:
+                                title_lower = r["title"].lower()
+                                if track["name"].lower() in title_lower:
+                                    result = {
+                                        "title": r["title"],
+                                        "url": r["url"],
+                                        "source": r.get("source", "unknown"),
+                                    }
+                                    break
+                            if result:
+                                break
+                            # Якщо точного співпадіння нема — беремо перший
+                            result = {
+                                "title": res[0]["title"],
+                                "url": res[0]["url"],
+                                "source": res[0].get("source", "unknown"),
+                            }
+                            break
+                    except Exception:
+                        continue
+                    if result:
+                        break
+            except Exception as e:
+                logger.warning(f"Search attempt failed: {e}")
+                continue
+
         if not result:
             await status.delete()
             return
+
         await status.delete()
         await do_download(
             q.message, result["url"], track["name"], track["artists"], uid, ctx
@@ -2793,13 +2900,63 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
             return
         track = album_data["tracks"][track_idx]
+
+        # MusicBrainz не має прямих URL, тому одразу шукаємо
         status = await q.message.reply_text(
             f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
         )
-        result = await async_find_track(track["name"], track["artists"])
+
+        # 4 варіанти пошуку
+        search_queries = [
+            f"{track['artists']} {track['name']}",
+            f"{track['name']} {track['artists']}",
+            track["name"],
+            track["artists"],
+        ]
+
+        result = None
+        for query in search_queries:
+            if result:
+                break
+            try:
+                sources = [
+                    lambda q: jamendo_search(q, 5),
+                    lambda q: dz_search_tracks(q, 5),
+                    lambda q: sc_search(q, 5),
+                ]
+                for src in sources:
+                    try:
+                        res = src(query)
+                        if res:
+                            for r in res:
+                                title_lower = r["title"].lower()
+                                if track["name"].lower() in title_lower:
+                                    result = {
+                                        "title": r["title"],
+                                        "url": r["url"],
+                                        "source": r.get("source", "unknown"),
+                                    }
+                                    break
+                            if result:
+                                break
+                            result = {
+                                "title": res[0]["title"],
+                                "url": res[0]["url"],
+                                "source": res[0].get("source", "unknown"),
+                            }
+                            break
+                    except Exception:
+                        continue
+                    if result:
+                        break
+            except Exception as e:
+                logger.warning(f"Search attempt failed: {e}")
+                continue
+
         if not result:
             await status.delete()
             return
+
         await status.delete()
         await do_download(
             q.message, result["url"], track["name"], track["artists"], uid, ctx
