@@ -39,14 +39,6 @@ from telegram.ext import (
 )
 import yt_dlp
 
-# ─── YouTube Music API (unofficial) ──────────────────────────────────────────
-try:
-    from ytmusicapi import YTMusic
-    YTMUSIC_AVAILABLE = True
-except ImportError:
-    YTMUSIC_AVAILABLE = False
-    logger.warning("ytmusicapi not installed. YouTube Music search disabled.")
-
 # ─── Логування ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -483,144 +475,6 @@ def dz_get_artist_top(artist_name, limit=20):
         logger.warning(f"Deezer artist top failed: {e}")
         return []
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  YOUTUBE MUSIC API — ПОШУК ТА ІНФОРМАЦІЯ (через ytmusicapi)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_ytmusic_instance = None
-
-def get_ytmusic():
-    """Get or create YTMusic instance (no auth needed for search)."""
-    global _ytmusic_instance
-    if not YTMUSIC_AVAILABLE:
-        return None
-    if _ytmusic_instance is None:
-        try:
-            _ytmusic_instance = YTMusic()  # Anonymous — no auth needed for search
-            logger.info("✅ YTMusic initialized (anonymous)")
-        except Exception as e:
-            logger.error(f"YTMusic init failed: {e}")
-            return None
-    return _ytmusic_instance
-
-def ytm_search_albums(query, limit=10):
-    """Search albums on YouTube Music."""
-    yt = get_ytmusic()
-    if not yt:
-        return []
-    try:
-        results = yt.search(query, filter="albums", limit=limit)
-        albums = []
-        for item in results:
-            if item.get("resultType") != "album":
-                continue
-            artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
-            year = item.get("year", "—")
-            albums.append({
-                "id": item.get("browseId", ""),
-                "name": item.get("title", "Unknown"),
-                "artist": artists,
-                "year": str(year) if year else "—",
-                "total_tracks": item.get("trackCount", 0),
-                "image_url": item.get("thumbnails", [{}])[0].get("url", "") if item.get("thumbnails") else "",
-                "source": "ytmusic",
-                "type": item.get("type", "Album"),
-            })
-        logger.info(f"YTMusic album search: {len(albums)} results for '{query}'")
-        return albums
-    except Exception as e:
-        logger.warning(f"YTMusic album search failed: {e}")
-        return []
-
-def ytm_get_album_tracks(album_id):
-    """Get album tracks from YouTube Music."""
-    yt = get_ytmusic()
-    if not yt:
-        return None
-    try:
-        album = yt.get_album(album_id)
-        if not album:
-            return None
-
-        tracks = []
-        total_duration = 0
-        for i, track in enumerate(album.get("tracks", [])):
-            dur_sec = track.get("duration_seconds", 0)
-            total_duration += dur_sec
-            artists = ", ".join(a.get("name", "") for a in track.get("artists", []))
-            tracks.append({
-                "name": track.get("title", "Unknown"),
-                "artists": artists,
-                "duration": fmt_dur(dur_sec),
-                "duration_sec": dur_sec,
-                "track_number": i + 1,
-                "video_id": track.get("videoId", ""),
-                "url": f"https://music.youtube.com/watch?v={track.get('videoId', '')}" if track.get("videoId") else "",
-            })
-
-        artist_name = album.get("artists", [{}])[0].get("name", "Unknown") if album.get("artists") else "Unknown"
-        thumbnails = album.get("thumbnails", [])
-        image_url = thumbnails[0].get("url", "") if thumbnails else ""
-
-        return {
-            "id": album_id,
-            "name": album.get("title", "Unknown Album"),
-            "artist": artist_name,
-            "release_date": album.get("year", "—"),
-            "year": str(album.get("year", "—")),
-            "total_tracks": len(tracks),
-            "tracks": tracks,
-            "total_duration": fmt_dur(total_duration),
-            "total_duration_sec": total_duration,
-            "label": album.get("audioPlaylistId", "—"),
-            "image_url": image_url,
-            "source": "ytmusic",
-        }
-    except Exception as e:
-        logger.error(f"YTMusic album tracks error: {e}")
-        return None
-
-def ytm_search_tracks(query, limit=10):
-    """Search tracks on YouTube Music."""
-    yt = get_ytmusic()
-    if not yt:
-        return []
-    try:
-        results = yt.search(query, filter="songs", limit=limit)
-        tracks = []
-        for item in results:
-            if item.get("resultType") != "song":
-                continue
-            artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
-            video_id = item.get("videoId", "")
-            tracks.append({
-                "title": f"{artists} - {item.get('title', 'Unknown')}",
-                "url": f"https://music.youtube.com/watch?v={video_id}" if video_id else "",
-                "id": video_id,
-                "duration": fmt_dur(item.get("duration_seconds", 0)),
-                "channel": artists,
-                "source": "ytmusic",
-                "video_id": video_id,
-            })
-        logger.info(f"YTMusic track search: {len(tracks)} results for '{query}'")
-        return tracks
-    except Exception as e:
-        logger.warning(f"YTMusic track search failed: {e}")
-        return []
-
-# ─── Асинхронні обгортки для YTMusic ─────────────────────────────────────────
-async def async_ytm_search_albums(query, limit=10):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, ytm_search_albums, query, limit)
-
-async def async_ytm_get_album(album_id):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, ytm_get_album_tracks, album_id)
-
-async def async_ytm_search_tracks(query, limit=10):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, ytm_search_tracks, query, limit)
 
 # ─── MUSIC_GENRES ────────────────────────────────────────────────────────────
 MUSIC_GENRES = {
@@ -2013,30 +1867,11 @@ async def async_find_track(track_name, artist_name):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 async def search_all_albums(query, limit=10):
-    """Search albums across all sources: YouTube Music → Deezer → Spotify → MusicBrainz."""
+    """Search albums across all sources: Deezer → Spotify → MusicBrainz."""
     results = []
     seen_ids = set()
 
-    # 1. YouTube Music (BIGGEST catalog - almost every release exists here)
-    try:
-        ytm_albums = ytm_search_albums(query, limit=limit)
-        for album in ytm_albums:
-            album_id = f"ytm_{album['id']}"
-            if album_id not in seen_ids and album.get("id"):
-                seen_ids.add(album_id)
-                results.append({
-                    "id": album["id"],
-                    "name": album["name"],
-                    "artist": album["artist"],
-                    "year": album["year"],
-                    "total_tracks": album["total_tracks"],
-                    "image_url": album.get("image_url", ""),
-                    "source": "ytmusic",
-                })
-    except Exception as e:
-        logger.warning(f"YTMusic album search failed: {e}")
-
-    # 2. Deezer (good metadata + some tracks have direct URLs)
+    # 1. Deezer (good metadata + some tracks have direct URLs)
     try:
         dz_albums = dz_search_albums(query, limit=limit)
         for album in dz_albums:
@@ -2055,7 +1890,7 @@ async def search_all_albums(query, limit=10):
     except Exception as e:
         logger.warning(f"Deezer album search failed: {e}")
 
-    # 3. Spotify (if credentials available)
+    # 2. Spotify (if credentials available)
     if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         try:
             sp_albums = search_spotify_and_format(query, limit=limit)
@@ -2075,7 +1910,7 @@ async def search_all_albums(query, limit=10):
         except Exception as e:
             logger.warning(f"Spotify album search failed: {e}")
 
-    # 4. MusicBrainz (fallback for indie/obscure releases)
+    # 3. MusicBrainz (fallback for indie/obscure releases)
     try:
         mb_releases = mb_search_album(query, limit=limit)
         for rel in mb_releases:
@@ -2095,7 +1930,7 @@ async def search_all_albums(query, limit=10):
     except Exception as e:
         logger.warning(f"MusicBrainz album search failed: {e}")
 
-    logger.info(f"Album search '{query}': {len(results)} results (YTMusic+Deezer+Spotify+MB)")
+    logger.info(f"Album search '{query}': {len(results)} results (Deezer+Spotify+MB)")
     return results[:limit]
 
 async def do_album_search(update, query, uid, ctx):
@@ -2118,10 +1953,7 @@ async def do_album_search(update, query, uid, ctx):
 
     kb = []
     for album in albums[:8]:
-        if album["source"] == "ytmusic":
-            source_icon = "📀"
-            callback = f"ytm_album|{album['id']}"
-        elif album["source"] == "deezer":
+        if album["source"] == "deezer":
             source_icon = "💿"
             callback = f"dz_album|{album['id']}"
         elif album["source"] == "spotify":
@@ -2146,9 +1978,9 @@ async def do_album_search(update, query, uid, ctx):
     kb.append([back_btn(uid)])
 
     header = {
-        "uk": f"🎸 <b>Знайдено альбомів:</b> «{query}»\n\n📀 YouTube Music | 💿 Deezer | 🎵 Spotify | 🎶 MusicBrainz\n\nОбери альбом 👇",
-        "ru": f"🎸 <b>Найдено альбомов:</b> «{query}»\n\n📀 YouTube Music | 💿 Deezer | 🎵 Spotify | 🎶 MusicBrainz\n\nВыбери альбом 👇",
-        "en": f"🎸 <b>Albums found:</b> «{query}»\n\n📀 YouTube Music | 💿 Deezer | 🎵 Spotify | 🎶 MusicBrainz\n\nChoose an album 👇",
+        "uk": f"🎸 <b>Знайдено альбомів:</b> «{query}»\n\n💿 Deezer | 🎵 Spotify | 🎶 MusicBrainz\n\nОбери альбом 👇",
+        "ru": f"🎸 <b>Найдено альбомов:</b> «{query}»\n\n💿 Deezer | 🎵 Spotify | 🎶 MusicBrainz\n\nВыбери альбом 👇",
+        "en": f"🎸 <b>Albums found:</b> «{query}»\n\n💿 Deezer | 🎵 Spotify | 🎶 MusicBrainz\n\nChoose an album 👇",
     }
 
     await msg.edit_text(
@@ -2279,59 +2111,6 @@ def download_mp3(url, out_dir, quality="192"):
         logger.error(f"Download failed: {e}")
         return None
 
-async def show_ytmusic_album(msg, album_id, uid, ctx):
-    """Show YouTube Music album with tracks."""
-    l = get_lang(uid)
-    status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
-
-    album = await async_ytm_get_album(album_id)
-    if not album:
-        await status.edit_text("❌ Не вдалося отримати дані.")
-        return
-
-    ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
-    ctx.bot_data.setdefault("ytm_album_cache", {})[ck] = album
-    ctx.bot_data["last_ytm_album_ck"] = ck
-
-    text = (
-        f"📀 <b>{album['name']}</b>\n\n"
-        f"🎤 {album['artist']}\n"
-        f"📅 {album['year']}\n"
-        f"🎵 {album['total_tracks']} треків\n"
-        f"⏱ {album['total_duration']}\n\n"
-    )
-
-    kb = []
-    for i, track in enumerate(album["tracks"][:20]):
-        text += f"{i+1}. {track['name']} — {track['duration']}\n"
-        kb.append([
-            InlineKeyboardButton(
-                f"▶️ {i+1}. {track['name'][:35]} ({track['duration']})",
-                callback_data=f"ytm_track|{ck}|{i}"
-            )
-        ])
-
-    zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
-    kb.append([InlineKeyboardButton(zip_label, callback_data="ytm_albumzip")])
-    kb.append([back_btn(uid)])
-
-    await status.delete()
-
-    image_url = album.get("image_url", "")
-    if image_url:
-        try:
-            await msg.reply_photo(
-                photo=image_url,
-                caption=text[:1024],
-                reply_markup=InlineKeyboardMarkup(kb),
-                parse_mode="HTML"
-            )
-            return
-        except Exception as e:
-            logger.error(f"YTMusic album photo failed: {e}")
-
-    await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
 
 async def async_download_with_fallback(url, out_dir, quality="192"):
     result = await async_download(url, out_dir, quality)
@@ -2400,18 +2179,19 @@ def main_kb(uid):
     l = get_lang(uid)
     btn = lambda text, data: InlineKeyboardButton(text, callback_data=data)
     labels = {
-        "uk": ["🔍 Пошук", "💿 Альбоми", "👤 Профіль", "💎 Premium", "🎁 Запросити", "⚙️ Налаштування"],
-        "ru": ["🔍 Поиск", "💿 Альбомы", "👤 Профиль", "💎 Premium", "🎁 Пригласить", "⚙️ Настройки"],
-        "en": ["🔍 Search", "💿 Albums", "👤 Profile", "💎 Premium", "🎁 Invite", "⚙️ Settings"],
-        "fr": ["🔍 Recherche", "💿 Albums", "👤 Profil", "💎 Premium", "🎁 Inviter", "⚙️ Paramètres"],
+        "uk": ["🔍 Пошук", "💿 Альбоми", "📚 Бібліотека", "👤 Профіль", "💎 Premium", "🎁 Запросити", "⚙️ Налаштування"],
+        "ru": ["🔍 Поиск", "💿 Альбомы", "📚 Библиотека", "👤 Профиль", "💎 Premium", "🎁 Пригласить", "⚙️ Настройки"],
+        "en": ["🔍 Search", "💿 Albums", "📚 Library", "👤 Profile", "💎 Premium", "🎁 Invite", "⚙️ Settings"],
+        "fr": ["🔍 Recherche", "💿 Albums", "📚 Bibliothèque", "👤 Profil", "💎 Premium", "🎁 Inviter", "⚙️ Paramètres"],
     }
     lb = labels.get(l, labels["en"])
     back_labels = {"uk": "← Назад", "ru": "← Назад", "en": "← Back", "fr": "← Retour"}
     return (
         InlineKeyboardMarkup([
             [btn(lb[0], "m:search"), btn(lb[1], "m:albums")],
-            [btn(lb[2], "m:profile"), btn(lb[3], "m:sub")],
-            [btn(lb[4], "m:ref"), btn(lb[5], "m:settings")],
+            [btn(lb[2], "m:library"), btn(lb[3], "m:profile")],
+            [btn(lb[4], "m:sub"), btn(lb[5], "m:ref")],
+            [btn(lb[6], "m:settings")],
         ]),
         back_labels.get(l, "← Back"),
     )
@@ -2422,6 +2202,7 @@ def back_btn(uid):
     return InlineKeyboardButton(
         labels.get(l, "◀️ Back"), callback_data="m:home"
     )
+
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin panel."""
@@ -2454,7 +2235,6 @@ async def _show_admin_panel(msg, uid):
         await msg.edit_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
     except Exception:
         await msg.reply_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
-
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     username = update.effective_user.username or ""
@@ -2760,50 +2540,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download(q.message, url, title, artist, uid, ctx)
         return
 
-    # YouTube Music альбом
-    if data.startswith("ytm_album|"):
-        album_id = data.split("|", 1)[1]
-        await show_ytmusic_album(q.message, album_id, uid, ctx)
+    # Library
+    if data == "m:library":
+        await show_library(q.message, uid, ctx)
         return
 
-    if data.startswith("ytm_track|"):
-        parts = data.split("|", 2)
-        album_ck = parts[1]
-        track_idx = int(parts[2])
-        album_data = ctx.bot_data.get("ytm_album_cache", {}).get(album_ck)
-        if not album_data or track_idx >= len(album_data.get("tracks", [])):
-            await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
-            return
-        track = album_data["tracks"][track_idx]
-        # YouTube Music tracks have direct URLs
-        if track.get("url"):
-            await do_download(q.message, track["url"], track["name"], track["artists"], uid, ctx)
-        else:
-            status = await q.message.reply_text(
-                f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
-            )
-            result = await async_find_track(track["name"], track["artists"])
-            if not result:
-                await status.edit_text(
-                    f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
-                )
-                return
-            await status.delete()
-            await do_download(
-                q.message, result["url"], track["name"], track["artists"], uid, ctx
-            )
-        return
-
-    if data == "ytm_albumzip":
-        if not is_premium(uid):
-            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
-            return
-        album_ck = ctx.bot_data.get("last_ytm_album_ck", "")
-        album_data = ctx.bot_data.get("ytm_album_cache", {}).get(album_ck)
-        if not album_data:
-            await q.message.reply_text("❌ Дані альбому застаріли.")
-            return
-        await do_download_ytm_album_zip(q.message, album_data, uid, ctx)
+    if data == "libdel":
+        del_lib_item(uid, int(parts[1]))
+        kb, text = await lib_kb(uid, ctx)
+        try:
+            await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await q.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     # Deezer альбом
@@ -3130,6 +2878,31 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
             return
         await batch_download(update.message, text, uid, ctx, 20)
+        return
+
+    # Library search
+    if state == "library_search":
+        set_state(uid, "")
+        kb, text = await lib_kb(uid, ctx)
+        # Filter library by search text
+        songs = get_lib(uid)
+        filtered = [s for s in songs if text.lower() in s["title"].lower() or text.lower() in s["artist"].lower()]
+        if not filtered:
+            await update.message.reply_text("😔 Не знайдено.")
+            return
+        kb = []
+        for s in filtered:
+            url_id = cache_url(ctx.bot_data, s["url"], s["title"], s["artist"])
+            kb.append([
+                InlineKeyboardButton(f"🎵 {s['title'][:38]}", callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"),
+                InlineKeyboardButton("🗑", callback_data=f"libdel|{s['id']}")
+            ])
+        kb.append([back_btn(uid)])
+        await update.message.reply_text(
+            f"📚 <b>Результати:</b> {text}",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="HTML"
+        )
         return
 
     # Album search
@@ -3617,99 +3390,6 @@ async def do_download_deezer_album_zip(msg, album_data, uid, ctx):
     await status.delete()
     os.unlink(zip_path)
 
-async def do_download_ytm_album_zip(msg, album_data, uid, ctx):
-    """Download YouTube Music album as ZIP - uses direct YouTube URLs."""
-    l = get_lang(uid)
-    status = await msg.reply_text(
-        f"⬇️ Завантажую альбом: <b>{album_data['name']}</b>\n"
-        f"<i>Джерело: YouTube Music</i>",
-        parse_mode="HTML"
-    )
-
-    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
-    tracks_with_url = []
-    total = len(album_data["tracks"])
-
-    for i, track in enumerate(album_data["tracks"]):
-        await status.edit_text(
-            f"🔍 {i+1}/{total}: <b>{track['name']}</b>…",
-            parse_mode="HTML"
-        )
-        # YouTube Music tracks have direct URLs
-        if track.get("url"):
-            tracks_with_url.append({
-                "title": f"{track['artists']} — {track['name']}",
-                "url": track["url"],
-                "source": "ytmusic",
-            })
-        else:
-            # Fallback search
-            result = await async_find_track(track["name"], track["artists"])
-            if result:
-                tracks_with_url.append({
-                    "title": f"{track['artists']} — {track['name']}",
-                    "url": result["url"],
-                    "source": result["source"],
-                })
-        await asyncio.sleep(0.3)
-
-    if not tracks_with_url:
-        await status.edit_text("😔 Не знайдено жодного трека.")
-        return
-
-    sources = ", ".join(set(t["source"] for t in tracks_with_url))
-    await status.edit_text(
-        f"⬇️ Завантажую {len(tracks_with_url)}/{total} треків…\n"
-        f"<i>Джерела: {sources}</i>\n"
-        f"<i>Формується ZIP…</i>",
-        parse_mode="HTML"
-    )
-
-    tmp_dir = tempfile.mkdtemp()
-    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
-    if not zip_path:
-        await status.edit_text("❌ Помилка створення архіву.")
-        return
-
-    size_mb = os.path.getsize(zip_path) / 1024 / 1024
-    if size_mb > 2000:
-        await status.edit_text(f"❌ Архів {size_mb:.1f} МБ — завеликий.")
-        return
-
-    await status.edit_text("📤 Відправляю ZIP…")
-    safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
-
-    thumb = album_data.get("image_url", "")
-    if thumb:
-        try:
-            thumb_resp = requests.get(thumb, timeout=10)
-            if thumb_resp.status_code == 200:
-                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_thumb:
-                    tmp_thumb.write(thumb_resp.content)
-                    tmp_thumb.flush()
-                    await msg.reply_document(
-                        document=open(zip_path, 'rb'),
-                        thumbnail=tmp_thumb.name,
-                        filename=f"{safe_name}.zip",
-                        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
-                        parse_mode="HTML"
-                    )
-                    os.unlink(tmp_thumb.name)
-                    await status.delete()
-                    os.unlink(zip_path)
-                    return
-        except Exception as e:
-            logger.warning(f"YTM ZIP thumbnail failed: {e}")
-
-    await msg.reply_document(
-        document=open(zip_path, 'rb'),
-        filename=f"{safe_name}.zip",
-        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
-        parse_mode="HTML"
-    )
-    await status.delete()
-    os.unlink(zip_path)
-
 
 async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     l = get_lang(uid)
@@ -3801,10 +3481,7 @@ async def do_zip_album_search(update, query, uid, ctx):
 
     kb = []
     for album in all_albums[:6]:
-        if album["source"] == "ytmusic":
-            source_icon = "📀"
-            callback = f"ytm_album|{album['id']}"
-        elif album["source"] == "deezer":
+        if album["source"] == "deezer":
             source_icon = "💿"
             callback = f"dz_album|{album['id']}"
         elif album["source"] == "spotify":
@@ -3828,7 +3505,6 @@ async def do_zip_album_search(update, query, uid, ctx):
 
     await msg.edit_text(
         "📦 <b>Обери альбом для ZIP:</b>\n\n"
-        "📀 YouTube Music — найбільша база\n"
         "💿 Deezer — прямі посилання\n"
         "🎵 Spotify — метадані\n"
         "🎶 MusicBrainz — незалежна музика",
