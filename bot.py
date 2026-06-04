@@ -2569,24 +2569,18 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
             return
         track = album_data["tracks"][track_idx]
-        # Deezer tracks have direct URLs - use them directly
-        if track.get("url"):
-            await do_download(q.message, track["url"], track["name"], track["artists"], uid, ctx)
-        else:
-            # Fallback search
-            status = await q.message.reply_text(
-                f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
-            )
-            result = await async_find_track(track["name"], track["artists"])
-            if not result:
-                await status.edit_text(
-                    f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
-                )
-                return
+        # Завжди шукаємо трек за назвою (як при звичайному пошуку), а не скачуємо напряму з альбому
+        status = await q.message.reply_text(
+            f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
+        )
+        result = await async_find_track(track["name"], track["artists"])
+        if not result:
             await status.delete()
-            await do_download(
-                q.message, result["url"], track["name"], track["artists"], uid, ctx
-            )
+            return
+        await status.delete()
+        await do_download(
+            q.message, result["url"], track["name"], track["artists"], uid, ctx
+        )
         return
 
     if data == "dz_albumzip":
@@ -2621,9 +2615,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         result = await async_find_track(track["name"], track["artists"])
         if not result:
-            await status.edit_text(
-                f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
-            )
+            await status.delete()
             return
         await status.delete()
         await do_download(
@@ -2742,9 +2734,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         result = await async_find_track(track["name"], track["artists"])
         if not result:
-            await status.edit_text(
-                f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
-            )
+            await status.delete()
             return
         await status.delete()
         await do_download(
@@ -3205,10 +3195,10 @@ async def do_download(msg, url, title, artist, uid, ctx):
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     txts = {
-        "uk": {"search": "🔎 Шукаю <b>{title}</b>", "dl": "⬇️ Завантажую <b>{title}</b>", "send": "📤 Надсилаю <b>{title}</b>", "done": "✅ <b>{title}</b> готовий!", "err": "❌ Не вдалося завантажити <b>{title}</b>", "big": "⚠️ Файл завеликий (>50МБ)"},
-        "ru": {"search": "🔎 Ищу <b>{title}</b>", "dl": "⬇️ Скачиваю <b>{title}</b>", "send": "📤 Отправляю <b>{title}</b>", "done": "✅ <b>{title}</b> готов!", "err": "❌ Не удалось скачать <b>{title}</b>", "big": "⚠️ Файл слишком большой (>50МБ)"},
-        "en": {"search": "🔎 Finding <b>{title}</b>", "dl": "⬇️ Downloading <b>{title}</b>", "send": "📤 Sending <b>{title}</b>", "done": "✅ <b>{title}</b> is ready!", "err": "❌ Failed to download <b>{title}</b>", "big": "⚠️ File too large (>50MB)"},
-        "fr": {"search": "🔎 Recherche de <b>{title}</b>", "dl": "⬇️ Téléchargement de <b>{title}</b>", "send": "📤 Envoi de <b>{title}</b>", "done": "✅ <b>{title}</b> prêt!", "err": "❌ Échec du téléchargement de <b>{title}</b>", "big": "⚠️ Fichier trop volumineux (>50Mo)"},
+        "uk": {"search": "🔎 Шукаю <b>{title}</b>", "dl": "⬇️ Завантажую <b>{title}</b>", "send": "📤 Надсилаю <b>{title}</b>", "err": "❌ Не вдалося завантажити <b>{title}</b>", "big": "⚠️ Файл завеликий (>50МБ)"},
+        "ru": {"search": "🔎 Ищу <b>{title}</b>", "dl": "⬇️ Скачиваю <b>{title}</b>", "send": "📤 Отправляю <b>{title}</b>", "err": "❌ Не удалось скачать <b>{title}</b>", "big": "⚠️ Файл слишком большой (>50МБ)"},
+        "en": {"search": "🔎 Finding <b>{title}</b>", "dl": "⬇️ Downloading <b>{title}</b>", "send": "📤 Sending <b>{title}</b>", "err": "❌ Failed to download <b>{title}</b>", "big": "⚠️ File too large (>50MB)"},
+        "fr": {"search": "🔎 Recherche de <b>{title}</b>", "dl": "⬇️ Téléchargement de <b>{title}</b>", "send": "📤 Envoi de <b>{title}</b>", "err": "❌ Échec du téléchargement de <b>{title}</b>", "big": "⚠️ Fichier trop volumineux (>50Mo)"},
     }
     t = txts.get(l, txts["en"])
 
@@ -3219,7 +3209,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
             await status.edit_text(t["dl"], parse_mode="HTML")
             path = await async_download_with_fallback(url, tmp, quality)
             if not path or not os.path.exists(path):
-                await status.edit_text(t["err"])
+                await status.delete()
                 return
 
             size_mb = os.path.getsize(path) / 1024 / 1024
@@ -3237,7 +3227,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
                     filename=f"{title[:50]}.mp3"
                 )
 
-            await status.edit_text(t["done"])
+            await status.delete()
             add_history(uid, title, artist)
             add_listening_stat(uid, title, artist, 0, "download")
 
@@ -3257,7 +3247,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
 
         except Exception as e:
             logger.error(f"Download error: {e}")
-            await status.edit_text(t["err"])
+            await status.delete()
 
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     """Download Spotify album as ZIP."""
