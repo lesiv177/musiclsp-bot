@@ -1871,7 +1871,7 @@ async def search_all_albums(query, limit=10):
     results = []
     seen_ids = set()
 
-    # 1. Deezer (good metadata + some tracks have direct URLs)
+    # 1. Deezer (metadata only - tracks are DRM protected, use for search)
     try:
         dz_albums = dz_search_albums(query, limit=limit)
         for album in dz_albums:
