@@ -672,10 +672,10 @@ LANGUAGES = {
 
 TEXTS = {
     "welcome": {
-        "uk": "🎸 <b>{bot}</b> 🎸\n\n<i>Твоя музика — завжди під рукою</i> 🎵\n\n<b>✨ Free</b>\n🔍 Пошук треків та альбомів\n⬇️ Завантаження MP3 (192kbps)\n📚 Бібліотека до 20 треків\n\n<b>💎 Premium</b>\n📦 ZIP-архіви альбомів\n📻 Плейлисти та радіо\n🎧 Якість 320kbps\n📊 Статистика прослуховування",
-        "ru": "🎸 <b>{bot}</b> 🎸\n\n<i>Твоя музыка — всегда под рукой</i> 🎵\n\n<b>✨ Free</b>\n🔍 Поиск треков и альбомов\n⬇️ Скачивание MP3 (192kbps)\n📚 Библиотека до 20 треков\n\n<b>💎 Premium</b>\n📦 ZIP-архивы альбомов\n📻 Плейлисты и радио\n🎧 Качество 320kbps\n📊 Статистика прослушивания",
-        "en": "🎸 <b>{bot}</b> 🎸\n\n<i>Your music — always at hand</i> 🎵\n\n<b>✨ Free</b>\n🔍 Search tracks & albums\n⬇️ Download MP3 (192kbps)\n📚 Library up to 20 tracks\n\n<b>💎 Premium</b>\n📦 ZIP album archives\n📻 Playlists & radio\n🎧 320kbps quality\n📊 Listening stats",
-        "fr": "🎸 <b>{bot}</b> 🎸\n\n<i>Ta musique — toujours à portée de main</i> 🎵\n\n<b>✨ Free</b>\n🔍 Recherche de titres & albums\n⬇️ Téléchargement MP3 (192kbps)\n📚 Bibliothèque jusqu'à 20 titres\n\n<b>💎 Premium</b>\n📦 Archives ZIP d'albums\n📻 Playlists & radio\n🎧 Qualité 320kbps\n📊 Statistiques d'écoute",
+        "uk": "🎸 <b>{bot}</b> 🎸\n\n<i>Твоя музика — завжди під рукою</i> 🎵\n\n<b>✨ Free</b>\n🔍 Пошук треків та альбомів\n⬇️ Завантаження MP3 (192kbps)\n\n<b>💎 Premium</b>\n📦 ZIP-архіви альбомів\n📻 Плейлисти та радіо\n🎧 Якість 320kbps\n📊 Статистика прослуховування",
+        "ru": "🎸 <b>{bot}</b> 🎸\n\n<i>Твоя музыка — всегда под рукой</i> 🎵\n\n<b>✨ Free</b>\n🔍 Поиск треков и альбомов\n⬇️ Скачивание MP3 (192kbps)\n\n<b>💎 Premium</b>\n📦 ZIP-архивы альбомов\n📻 Плейлисты и радио\n🎧 Качество 320kbps\n📊 Статистика прослушивания",
+        "en": "🎸 <b>{bot}</b> 🎸\n\n<i>Your music — always at hand</i> 🎵\n\n<b>✨ Free</b>\n🔍 Search tracks & albums\n⬇️ Download MP3 (192kbps)\n\n<b>💎 Premium</b>\n📦 ZIP album archives\n📻 Playlists & radio\n🎧 320kbps quality\n📊 Listening stats",
+        "fr": "🎸 <b>{bot}</b> 🎸\n\n<i>Ta musique — toujours à portée de main</i> 🎵\n\n<b>✨ Free</b>\n🔍 Recherche de titres & albums\n⬇️ Téléchargement MP3 (192kbps)\n\n<b>💎 Premium</b>\n📦 Archives ZIP d'albums\n📻 Playlists & radio\n🎧 Qualité 320kbps\n📊 Statistiques d'écoute",
     },
     "premium_only": {
         "uk": "⛔ Тільки для <b>Premium</b>\n💎 Оформити → /subscription",
@@ -1406,7 +1406,7 @@ async def handle_admin_input(update, ctx, state, text):
                     user = dict(zip(cols, row))
                 else:
                     user = dict(row)
-                status = "Premium" if (user.get("is_premium") or user.get("is_premium") == 1) else "Free"
+                status = "💎" if (user.get("is_premium") or user.get("is_premium") == 1) else "✨"
                 await update.message.reply_text(
                     f"👤 User: {user['id']}\n@{user.get('username', '—')}\nStatus: {status}",
                     parse_mode="HTML"
@@ -1536,10 +1536,10 @@ async def show_genres(msg, uid, ctx):
     kb.append([back_btn(uid)])
 
     text = {
-        "uk": "🎸 <b>Обери жанр:</b>",
-        "ru": "🎸 <b>Выбери жанр:</b>",
-        "en": "🎸 <b>Choose a genre:</b>",
-    }.get(l, "🎸 <b>Choose a genre:</b>")
+        "uk": "🎸 <b>Жанри</b>",
+        "ru": "🎸 <b>Жанры</b>",
+        "en": "🎸 <b>Genres</b>",
+    }.get(l, "🎸 <b>Genres</b>")
 
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
@@ -2193,7 +2193,6 @@ async def show_deezer_album(msg, album_id, uid, ctx):
     zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
     kb.append([InlineKeyboardButton(zip_label, callback_data="dz_albumzip")])
     kb.append([back_btn(uid)])
-    
 
     await status.delete()
 
@@ -2279,7 +2278,6 @@ def download_mp3(url, out_dir, quality="192"):
     except Exception as e:
         logger.error(f"Download failed: {e}")
         return None
-
 async def show_ytmusic_album(msg, album_id, uid, ctx):
     """Show YouTube Music album with tracks."""
     l = get_lang(uid)
@@ -2401,10 +2399,10 @@ def main_kb(uid):
     l = get_lang(uid)
     btn = lambda text, data: InlineKeyboardButton(text, callback_data=data)
     labels = {
-        "uk": ["🔍 Пошук", "💿 Альбоми", "📚 Бібліотека", "👤 Профіль", "💎 Premium", "🎁 Запросити", "⚙️ Налаштування"],
-        "ru": ["🔍 Поиск", "💿 Альбомы", "📚 Библиотека", "👤 Профиль", "💎 Premium", "🎁 Пригласить", "⚙️ Настройки"],
-        "en": ["🔍 Search", "💿 Albums", "📚 Library", "👤 Profile", "💎 Premium", "🎁 Invite", "⚙️ Settings"],
-        "fr": ["🔍 Recherche", "💿 Albums", "📚 Bibliothèque", "👤 Profil", "💎 Premium", "🎁 Inviter", "⚙️ Paramètres"],
+        "uk": ["🔍 Пошук", "💿 Альбоми", "👤 Профіль", "💎 Premium", "🎁 Запросити", "⚙️ Налаштування"],
+        "ru": ["🔍 Поиск", "💿 Альбомы", "👤 Профиль", "💎 Premium", "🎁 Пригласить", "⚙️ Настройки"],
+        "en": ["🔍 Search", "💿 Albums", "👤 Profile", "💎 Premium", "🎁 Invite", "⚙️ Settings"],
+        "fr": ["🔍 Recherche", "💿 Albums", "👤 Profil", "💎 Premium", "🎁 Inviter", "⚙️ Paramètres"],
     }
     lb = labels.get(l, labels["en"])
     back_labels = {"uk": "← Назад", "ru": "← Назад", "en": "← Back", "fr": "← Retour"}
@@ -2438,10 +2436,10 @@ async def _show_admin_panel(msg, uid):
     """Show admin panel inline."""
     l = get_lang(uid)
     texts = {
-        "uk": "<b>Адмін панель</b>\n\nВибери дію:",
-        "ru": "<b>Админ панель</b>\n\nВыбери действие:",
-        "en": "<b>Admin panel</b>\n\nChoose action:",
-        "fr": "<b>Panneau admin</b>\n\nChoisis l'action:",
+        "uk": "🔧 <b>Адмін панель</b>\n\nВибери дію:",
+        "ru": "🔧 <b>Админ панель</b>\n\nВыбери действие:",
+        "en": "🔧 <b>Admin panel</b>\n\nChoose action:",
+        "fr": "🔧 <b>Panneau admin</b>\n\nChoisis l'action:",
     }
     back_labels = {"uk": "← Назад", "ru": "← Назад", "en": "← Back", "fr": "← Retour"}
     kb = InlineKeyboardMarkup([
@@ -2507,10 +2505,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:home":
         kb, _ = main_kb(uid)
         home_text = {
-            "uk": f"🎸 <b>{BOT_NAME}</b> 🎸\n\n<i>Що будемо слухати? 🎵</i>",
-            "ru": f"🎸 <b>{BOT_NAME}</b> 🎸\n\n<i>Что будем слушать? 🎵</i>",
-            "en": f"🎸 <b>{BOT_NAME}</b> 🎸\n\n<i>What are we listening to? 🎵</i>",
-            "fr": f"🎸 <b>{BOT_NAME}</b> 🎸\n\n<i>Qu'allons-nous écouter? 🎵</i>",
+            "uk": f"🎸 <b>{BOT_NAME}</b> 🎸",
+            "ru": f"🎸 <b>{BOT_NAME}</b> 🎸",
+            "en": f"🎸 <b>{BOT_NAME}</b> 🎸",
+            "fr": f"🎸 <b>{BOT_NAME}</b> 🎸",
         }
         text = home_text.get(l, home_text["en"])
         try:
@@ -2522,10 +2520,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:search":
         set_state(uid, "searching")
         prompts = {
-            "uk": "🎵 <b>Шукаємо трек!</b>\n\nВведи назву пісні або артиста:",
-            "ru": "🎵 <b>Ищем трек!</b>\n\nВведи название песни или артиста:",
-            "en": "🎵 <b>Let's find a track!</b>\n\nEnter song name or artist:",
-            "fr": "🎵 <b>Cherchons un titre!</b>\n\nEntre le nom de la chanson ou l'artiste:",
+            "uk": "🎵 Введи назву пісні або артиста:",
+            "ru": "🎵 Введи название песни или артиста:",
+            "en": "🎵 Enter song name or artist:",
+            "fr": "🎵 Entre le nom de la chanson ou l'artiste:",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2537,10 +2535,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:albums":
         set_state(uid, "album_search")
         prompts = {
-            "uk": "📀 <b>Шукаємо альбом!</b>\n\nВведи назву:\n<i>Наприклад: Yanix SS 20</i>",
-            "ru": "📀 <b>Ищем альбом!</b>\n\nВведи название:\n<i>Например: Yanix SS 20</i>",
-            "en": "📀 <b>Let's find an album!</b>\n\nEnter name:\n<i>Example: Yanix SS 20</i>",
-            "fr": "📀 <b>Cherchons un album!</b>\n\nEntre le nom:\n<i>Exemple: Yanix SS 20</i>",
+            "uk": "📀 Введи назву альбому:",
+            "ru": "📀 Введи название альбома:",
+            "en": "📀 Enter album name:",
+            "fr": "📀 Entre le nom de l'album:",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2621,7 +2619,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if data == "adm:users":
             recent = get_recent_users(20)
-            text = "<b>Останні 20 користувачів</b>\n\n"
+            text = "👥 <b>Останні 20 користувачів</b>\n\n"
             for i, u in enumerate(recent, 1):
                 status = "💎" if u.get("is_premium") or u.get("is_premium") == 1 else "💿"
                 name = u.get("username", "—")
@@ -2632,7 +2630,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
         if data == "adm:stats":
             stats = get_global_stats()
-            text = f"<b>Статистика</b>\n\nКористувачів: {stats['total']}\nPremium: {stats['premium']}\nFree: {stats['free']}"
+            text = f"📊 <b>Статистика</b>\n\n👥 Користувачів: {stats['total']}\n💎 Premium: {stats['premium']}\n✨ Free: {stats['free']}"
             await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="adm:panel")]]), parse_mode="HTML")
             return
 
@@ -2670,10 +2668,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         set_state(uid, "radio_input")
         prompts = {
-            "uk": "📻 <b>Радіо режим!</b>\n\nВведи артиста або пісню — і я підберу схожу музику:",
-            "ru": "📻 <b>Радио режим!</b>\n\nВведи артиста или песню — и я подберу похожую музыку:",
-            "en": "📻 <b>Radio mode!</b>\n\nEnter artist or song — I'll pick similar music:",
-            "fr": "📻 <b>Mode radio!</b>\n\nEntre un artiste ou une chanson — je choisirai de la musique similaire:",
+            "uk": "📻 Введи артиста або пісню для радіо:",
+            "ru": "📻 Введи артиста или песню для радио:",
+            "en": "📻 Enter artist or song for radio:",
+            "fr": "📻 Entre un artiste ou une chanson pour la radio:",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2717,10 +2715,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             return
         set_state(uid, "ai_recommend_input")
         prompts = {
-            "uk": "🤖 <b>Пошук схожої музики!</b>\n\nВведи артиста або жанр:",
-            "ru": "🤖 <b>Поиск похожей музыки!</b>\n\nВведи артиста или жанр:",
-            "en": "🤖 <b>Find similar music!</b>\n\nEnter artist or genre:",
-            "fr": "🤖 <b>Trouver de la musique similaire!</b>\n\nEntre un artiste ou un genre:",
+            "uk": "🤖 Введи артиста або жанр:",
+            "ru": "🤖 Введи артиста или жанр:",
+            "en": "🤖 Enter artist or genre:",
+            "fr": "🤖 Entre un artiste ou un genre:",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -3964,25 +3962,24 @@ async def show_library(msg, uid, ctx):
 async def show_profile(msg, uid):
     u = get_user(uid)
     stats = get_stats_user(uid)
-    status_text = "Premium" if is_premium(uid) else "Free"
+    status_text = "💎 Premium" if is_premium(uid) else "✨ Free"
     joined = str(u["joined"])[:10] if u and u["joined"] else "—"
     premium_since = str(u["premium_since"])[:10] if u and u["premium_since"] else "—"
     listen_hours = stats["listen_time"] // 3600 if stats["listen_time"] else 0
 
     text = (
-        f"<b>Профіль</b>\n\n"
-        f"ID: <code>{uid}</code>\n"
-        f"В боті з: {joined}\n"
-        f"Статус: <b>{status_text}</b>\n"
+        f"<b>👤 Профіль</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"📅 В боті з: {joined}\n"
+        f"💎 Статус: {status_text}\n"
     )
     if is_premium(uid) and premium_since != "—":
-        text += f"Premium з: {premium_since}\n"
+        text += f"⭐ Premium з: {premium_since}\n"
     text += (
-        f"\n<b>Статистика</b>\n"
-        f"Завантажено: {stats['dl']}\n"
-        f"В бібліотеці: {stats['lib']}\n"
-        f"Артистів: {stats['unique_artists']}\n"
-        f"Слухання: {listen_hours} год"
+        f"\n<b>📊 Статистика</b>\n"
+        f"⬇️ Завантажено: {stats['dl']}\n"
+        f"🎤 Артистів: {stats['unique_artists']}\n"
+        f"🎧 Слухання: {listen_hours} год"
     )
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
@@ -3993,44 +3990,42 @@ async def show_profile(msg, uid):
 async def show_sub(msg, uid, ctx=None):
     l = get_lang(uid)
     premium = is_premium(uid)
-    status_icon = "Premium" if premium else "Free"
+    status_icon = "💎 Premium" if premium else "✨ Free"
 
     quality = DEF_QUALITY
     if ctx:
         quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     text = (
-        f"<b>Підписка</b>\n\n"
-        f"Статус: <b>{status_icon}</b>\n\n"
+        f"<b>💎 Підписка</b>\n\n"
+        f"Статус: {status_icon}\n\n"
     )
 
     if not premium:
         text += (
-            f"<b>Free</b>\n"
-            f"• Пошук та завантаження MP3 (192kbps)\n"
-            f"• Бібліотека до 20 треків\n"
-            f"• Пісні артиста: до 10\n\n"
-            f"<b>Premium</b>\n"
-            f"• Якість 192 / 320 kbps\n"
-            f"• Бібліотека без обмежень\n"
-            f"• ZIP-архіви альбомів\n"
-            f"• Плейлисти та радіо\n"
-            f"• Розпізнавання музики\n"
-            f"• Тексти пісень\n"
-            f"• Схожа музика\n"
-            f"• Batch: 20/50/100 треків\n"
-            f"• Розширена статистика\n\n"
-            f"Оформити Premium: {AUTH_BOT}"
+            f"<b>✨ Free</b>\n"
+            f"🔍 Пошук та завантаження MP3 (192kbps)\n"
+            f"📚 Бібліотека до 20 треків\n\n"
+            f"<b>💎 Premium</b>\n"
+            f"🎧 Якість 192 / 320 kbps\n"
+            f"📦 ZIP-архіви альбомів\n"
+            f"📻 Плейлисти та радіо\n"
+            f"🎤 Розпізнавання музики\n"
+            f"📝 Тексти пісень\n"
+            f"🤖 Схожа музика\n"
+            f"📥 Batch: 20/50/100 треків\n"
+            f"📊 Розширена статистика\n\n"
+            f"💰 Оформити Premium: {AUTH_BOT}"
         )
     else:
         text += (
-            f"<b>Premium активовано</b>\n\n"
-            f"Якість: {quality}kbps\n"
-            f"Бібліотека: без обмежень\n"
-            f"ZIP: доступно\n"
-            f"Радіо: доступно\n"
-            f"Тексти: доступно\n"
-            f"Схожа музика: доступно"
+            f"<b>⭐ Premium активовано</b>\n\n"
+            f"🎧 Якість: {quality}kbps\n"
+            f"📚 Бібліотека: без обмежень\n"
+            f"📦 ZIP: доступно\n"
+            f"📻 Радіо: доступно\n"
+            f"📝 Тексти: доступно\n"
+            f"🤖 Схожа музика: доступно"
         )
 
     kb = []
@@ -4071,10 +4066,10 @@ async def show_ref(msg, uid, ctx):
     link = f"https://t.me/{bot_info.username}?start={uid}"
 
     texts = {
-        "uk": {"title": "🎁 Запроси друга", "desc": "Поділись посиланням — нехай всі слухають разом 🎵", "link": "🔗 Твоє посилання"},
-        "ru": {"title": "🎁 Пригласи друга", "desc": "Поделись ссылкой — пусть все слушают вместе 🎵", "link": "🔗 Твоя ссылка"},
-        "en": {"title": "🎁 Invite a friend", "desc": "Share the link — let everyone listen together 🎵", "link": "🔗 Your link"},
-        "fr": {"title": "🎁 Invite un ami", "desc": "Partage le lien — écoutons tous ensemble 🎵", "link": "🔗 Ton lien"},
+        "uk": {"title": "🎁 Запроси друга", "desc": "Поділись — нехай всі слухають разом 🎵", "link": "🔗 Твоє посилання"},
+        "ru": {"title": "🎁 Пригласи друга", "desc": "Поделись — пусть все слушают вместе 🎵", "link": "🔗 Твоя ссылка"},
+        "en": {"title": "🎁 Invite a friend", "desc": "Share — let everyone listen together 🎵", "link": "🔗 Your link"},
+        "fr": {"title": "🎁 Invite un ami", "desc": "Partage — écoutons tous ensemble 🎵", "link": "🔗 Ton lien"},
     }
     t = texts.get(l, texts["en"])
 
@@ -4092,10 +4087,10 @@ async def show_settings(msg, uid, ctx):
     cur_q = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     texts = {
-        "uk": {"title": "⚙️ Налаштування", "lang": "🌐 Мова", "quality": "🎧 Якість"},
-        "ru": {"title": "⚙️ Настройки", "lang": "🌐 Язык", "quality": "🎧 Качество"},
-        "en": {"title": "⚙️ Settings", "lang": "🌐 Language", "quality": "🎧 Quality"},
-        "fr": {"title": "⚙️ Paramètres", "lang": "🌐 Langue", "quality": "🎧 Qualité"},
+        "uk": {"title": "⚙️ Налаштування", "lang": "🌍 Мова", "quality": "🎧 Якість"},
+        "ru": {"title": "⚙️ Настройки", "lang": "🌍 Язык", "quality": "🎧 Качество"},
+        "en": {"title": "⚙️ Settings", "lang": "🌍 Language", "quality": "🎧 Quality"},
+        "fr": {"title": "⚙️ Paramètres", "lang": "🌍 Langue", "quality": "🎧 Qualité"},
     }
     t = texts.get(l, texts["en"])
 
@@ -4132,10 +4127,10 @@ async def show_playlists_menu(msg, uid, ctx):
     playlists = get_playlists(uid)
 
     texts = {
-        "uk": {"title": "📋 Плейлисти", "create": "✚ Новий", "empty": "🎵 Створи свій перший плейлист!", "count": "шт."},
-        "ru": {"title": "📋 Плейлисты", "create": "✚ Новый", "empty": "🎵 Создай свой первый плейлист!", "count": "шт."},
-        "en": {"title": "📋 Playlists", "create": "✚ New", "empty": "🎵 Create your first playlist!", "count": "items"},
-        "fr": {"title": "📋 Playlists", "create": "✚ Nouvelle", "empty": "🎵 Crée ta première playlist!", "count": "éléments"},
+        "uk": {"title": "📋 Плейлисти", "create": "✚ Створити", "empty": "🎵 Створи свій перший плейлист!", "count": "шт."},
+        "ru": {"title": "📋 Плейлисты", "create": "✚ Создать", "empty": "🎵 Создай свой первый плейлист!", "count": "шт."},
+        "en": {"title": "📋 Playlists", "create": "✚ Create", "empty": "🎵 Create your first playlist!", "count": "items"},
+        "fr": {"title": "📋 Playlists", "create": "✚ Créer", "empty": "🎵 Crée ta première playlist!", "count": "éléments"},
     }
     t = texts.get(l, texts["en"])
 
@@ -4238,10 +4233,10 @@ async def show_stats(msg, uid):
     s7 = get_listening_stats(uid, 7)
     s30 = get_listening_stats(uid, 30)
     txts = {
-        "uk": {"t": "📊 Моя статистика", "d7": "📅 7 днів", "d30": "📅 30 днів", "tr": "🎵 Треків", "ta": "🎤 Топ артисти", "tt": "🏆 Топ треки", "tm": "разів"},
-        "ru": {"t": "📊 Моя статистика", "d7": "📅 7 дней", "d30": "📅 30 дней", "tr": "🎵 Треков", "ta": "🎤 Топ артисты", "tt": "🏆 Топ треки", "tm": "раз"},
-        "en": {"t": "📊 My statistics", "d7": "📅 7 days", "d30": "📅 30 days", "tr": "🎵 Tracks", "ta": "🎤 Top artists", "tt": "🏆 Top tracks", "tm": "times"},
-        "fr": {"t": "📊 Mes statistiques", "d7": "📅 7 jours", "d30": "📅 30 jours", "tr": "🎵 Morceaux", "ta": "🎤 Top artistes", "tt": "🏆 Top morceaux", "tm": "fois"},
+        "uk": {"t": "📊 Статистика", "d7": "📅 7 днів", "d30": "📅 30 днів", "tr": "🎵 Треків", "ta": "🎤 Топ артисти", "tt": "🏆 Топ треки", "tm": "разів"},
+        "ru": {"t": "📊 Статистика", "d7": "📅 7 дней", "d30": "📅 30 дней", "tr": "🎵 Треков", "ta": "🎤 Топ артисты", "tt": "🏆 Топ треки", "tm": "раз"},
+        "en": {"t": "📊 Statistics", "d7": "📅 7 days", "d30": "📅 30 days", "tr": "🎵 Tracks", "ta": "🎤 Top artists", "tt": "🏆 Top tracks", "tm": "times"},
+        "fr": {"t": "📊 Statistiques", "d7": "📅 7 jours", "d30": "📅 30 jours", "tr": "🎵 Morceaux", "ta": "🎤 Top artistes", "tt": "🏆 Top morceaux", "tm": "fois"},
     }
     t = txts.get(l, txts["en"])
     nl = chr(10)
