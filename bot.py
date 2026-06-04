@@ -2278,6 +2278,7 @@ def download_mp3(url, out_dir, quality="192"):
     except Exception as e:
         logger.error(f"Download failed: {e}")
         return None
+
 async def show_ytmusic_album(msg, album_id, uid, ctx):
     """Show YouTube Music album with tracks."""
     l = get_lang(uid)
@@ -2409,11 +2410,10 @@ def main_kb(uid):
     return (
         InlineKeyboardMarkup([
             [btn(lb[0], "m:search"), btn(lb[1], "m:albums")],
-            [btn(lb[2], "m:library"), btn(lb[3], "m:profile")],
-            [btn(lb[4], "m:sub"), btn(lb[5], "m:ref")],
-            [btn(lb[6], "m:settings")],
+            [btn(lb[2], "m:profile"), btn(lb[3], "m:sub")],
+            [btn(lb[4], "m:ref"), btn(lb[5], "m:settings")],
         ]),
-        back_labels.get(l, "◀️ Back"),
+        back_labels.get(l, "← Back"),
     )
 
 def back_btn(uid):
@@ -2422,7 +2422,6 @@ def back_btn(uid):
     return InlineKeyboardButton(
         labels.get(l, "◀️ Back"), callback_data="m:home"
     )
-
 # ─── /start ───────────────────────────────────────────────────────────────────
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Admin panel."""
@@ -2449,7 +2448,7 @@ async def _show_admin_panel(msg, uid):
         [InlineKeyboardButton("🔍 Знайти юзера", callback_data="adm:find")],
         [InlineKeyboardButton("👥 Останні 20 юзерів", callback_data="adm:users")],
         [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
-        [InlineKeyboardButton(back_labels.get(l, "◀️ Back"), callback_data="adm:panel")],
+        [InlineKeyboardButton(back_labels.get(l, "← Back"), callback_data="adm:panel")],
     ])
     try:
         await msg.edit_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
@@ -2547,10 +2546,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if data == "m:library":
-        await show_library(q.message, uid, ctx)
-        return
-
+    
     if data == "m:profile":
         await show_profile(q.message, uid)
         return
