@@ -381,6 +381,40 @@ def dz_search_tracks(query, limit=15):
         logger.warning(f"Deezer search failed: {e}")
         return []
 
+def jamendo_search(query, limit=10):
+    """Search Jamendo for free music tracks."""
+    try:
+        # Jamendo public client_id for demo (можна замінити на свій)
+        client_id = "8ed1a86a"  # Jamendo demo client_id
+        encoded = urllib.parse.quote(query)
+        url = f"https://api.jamendo.com/v3.0/tracks?client_id={client_id}&namesearch={encoded}&limit={limit}&format=json&audioformat=mp32"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        tracks = []
+        for item in data.get("results", []):
+            if not item.get("audiodownload"):
+                continue
+            artist = item.get("artist_name", "Unknown")
+            tracks.append({
+                "title": f"{artist} - {item.get('name', 'Unknown')}",
+                "url": item.get("audiodownload", ""),
+                "id": str(item.get("id", "")),
+                "duration": fmt_dur(item.get("duration", 0)),
+                "channel": artist,
+                "source": "jamendo",
+                "album": item.get("album_name", ""),
+                "cover": item.get("album_image", ""),
+            })
+        logger.info(f"Jamendo search: {len(tracks)} results for '{query}'")
+        return tracks
+    except Exception as e:
+        logger.warning(f"Jamendo search failed: {e}")
+        return []
+
+
+
 def dz_search_albums(query, limit=10):
     """Search albums on Deezer public API."""
     try:
@@ -1329,18 +1363,19 @@ def sc_search(query, limit=15):
     return tracks
 
 def search_all(query, limit=10):
-    """Search SoundCloud → Deezer → Spotify. Return unified results."""
+    """Search Jamendo → Deezer → Spotify → SoundCloud. Return unified results."""
     results = []
     seen_urls = set()
     seen_titles = set()
 
-    # 1. SoundCloud (основне джерело)
-    sc = sc_search(query, limit)
-    for track in sc:
+    # 1. Jamendo (безкоштовна музика, стабільна API)
+    jm = jamendo_search(query, limit)
+    for track in jm:
         key = track["url"]
-        if key not in seen_urls:
+        title_key = track["title"].lower().strip()
+        if key and key not in seen_urls and title_key not in seen_titles:
             seen_urls.add(key)
-            seen_titles.add(track["title"].lower().strip())
+            seen_titles.add(title_key)
             results.append(track)
 
     # 2. Deezer (додаткове джерело)
@@ -1367,7 +1402,16 @@ def search_all(query, limit=10):
         except Exception as e:
             logger.warning(f"Spotify search failed: {e}")
 
-    logger.info(f"Total search results for '{query}': {len(results)} (SC:{len(sc)}, DZ:{len(dz)})")
+    # 4. SoundCloud (останній - часто 404)
+    sc = sc_search(query, limit)
+    for track in sc:
+        key = track["url"]
+        if key and key not in seen_urls:
+            seen_urls.add(key)
+            seen_titles.add(track["title"].lower().strip())
+            results.append(track)
+
+    logger.info(f"Total search results for '{query}': {len(results)} (JM:{len(jm)}, DZ:{len(dz)}, SC:{len(sc)})")
     return results[:limit + 5]
 
 
@@ -1520,7 +1564,7 @@ def artist_songs(artist, limit=50):
     return results[:limit]
 
 def find_track_for_download(track_name, artist_name):
-    """Find track URL for download. Chain: SoundCloud → Deezer.
+    """Find track URL for download. Chain: Jamendo → Deezer → SoundCloud.
 
     IMPORTANT: Never returns Spotify URLs because yt-dlp cannot download
     from Spotify without a premium account. Spotify is only used for search/metadata.
@@ -1534,9 +1578,9 @@ def find_track_for_download(track_name, artist_name):
     ]
 
     for query in queries:
-        # 1. SoundCloud (primary source - works without auth)
+        # 1. Jamendo (primary source - free music, stable API)
         try:
-            result = sc_search(query, limit=5)
+            result = jamendo_search(query, limit=5)
             if result:
                 for r in result:
                     title_lower = r["title"].lower()
@@ -1544,15 +1588,15 @@ def find_track_for_download(track_name, artist_name):
                         return {
                             "title": r["title"],
                             "url": r["url"],
-                            "source": "soundcloud",
+                            "source": "jamendo",
                         }
                 return {
                     "title": result[0]["title"],
                     "url": result[0]["url"],
-                    "source": "soundcloud",
+                    "source": "jamendo",
                 }
         except Exception as e:
-            logger.warning(f"SC search failed for '{query}': {e}")
+            logger.warning(f"Jamendo search failed for '{query}': {e}")
 
         # 2. Deezer (secondary source - public API, some tracks have direct URLs)
         try:
@@ -1574,7 +1618,27 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"Deezer search failed for '{query}': {e}")
 
-        # 3. Spotify - ONLY for finding track info, then search that on SoundCloud/Deezer
+        # 3. SoundCloud (last resort - often 404 errors)
+        try:
+            result = sc_search(query, limit=5)
+            if result:
+                for r in result:
+                    title_lower = r["title"].lower()
+                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                        return {
+                            "title": r["title"],
+                            "url": r["url"],
+                            "source": "soundcloud",
+                        }
+                return {
+                    "title": result[0]["title"],
+                    "url": result[0]["url"],
+                    "source": "soundcloud",
+                }
+        except Exception as e:
+            logger.warning(f"SC search failed for '{query}': {e}")
+
+        # 4. Spotify - ONLY for finding track info, then search that on Jamendo/Deezer
         # NEVER return Spotify URLs directly - yt-dlp can't download them
         if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
             try:
@@ -1583,13 +1647,13 @@ def find_track_for_download(track_name, artist_name):
                     for s in spotify:
                         title_lower = s["title"].lower()
                         if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                            # Found on Spotify - now search this exact title on SoundCloud
-                            sc_fallback = sc_search(s["title"], limit=3)
-                            if sc_fallback:
+                            # Found on Spotify - now search this exact title on Jamendo
+                            jm_fallback = jamendo_search(s["title"], limit=3)
+                            if jm_fallback:
                                 return {
-                                    "title": sc_fallback[0]["title"],
-                                    "url": sc_fallback[0]["url"],
-                                    "source": "soundcloud",
+                                    "title": jm_fallback[0]["title"],
+                                    "url": jm_fallback[0]["url"],
+                                    "source": "jamendo",
                                 }
                             # Try Deezer fallback
                             dz_fallback = dz_search_tracks(s["title"], limit=3)
@@ -3222,8 +3286,6 @@ async def do_download(msg, url, title, artist, uid, ctx):
             with open(path, "rb") as f:
                 await msg.reply_audio(
                     audio=f,
-                    title=title[:64],
-                    performer=artist[:64],
                     filename=f"{title[:50]}.mp3"
                 )
 
@@ -3576,8 +3638,6 @@ async def batch_download(msg, artist, uid, ctx, size=20):
                     with open(path, "rb") as f:
                         await msg.reply_audio(
                             audio=f,
-                            title=t["title"][:64],
-                            performer=t["channel"][:64],
                             filename=f"{t['title'][:50]}.mp3"
                         )
                     add_history(uid, t["title"], t["channel"])
