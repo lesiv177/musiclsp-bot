@@ -259,6 +259,98 @@ def fmt_dur(s):
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DEEZER API — ПОШУК ТА ІНФОРМАЦІЯ (без авторизації)
+
+async def show_lyrics(msg, query, uid, ctx):
+    """Show lyrics using Genius API."""
+    l = get_lang(uid)
+    status = await msg.reply_text("🎤 Шукаю текст пісні…", parse_mode="HTML")
+
+    try:
+        headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+        search_url = "https://api.genius.com/search"
+        params = {"q": query}
+        resp = requests.get(search_url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        hits = data.get("response", {}).get("hits", [])
+        if not hits:
+            await status.edit_text("😔 Текст не знайдено.")
+            return
+
+        hit = hits[0]["result"]
+        title = hit.get("title", "Unknown")
+        artist = hit.get("primary_artist", {}).get("name", "Unknown")
+        url = hit.get("url", "")
+
+        # Try to get lyrics from the page
+        try:
+            page_resp = requests.get(url, timeout=15, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            })
+            from html.parser import HTMLParser
+
+            class LyricsExtractor(HTMLParser):
+                def __init__(self):
+                    super().__init__()
+                    self.in_lyrics = False
+                    self.lyrics = []
+                    self.div_count = 0
+
+                def handle_starttag(self, tag, attrs):
+                    attrs_dict = dict(attrs)
+                    if tag == "div" and attrs_dict.get("data-lyrics-container") == "true":
+                        self.in_lyrics = True
+                        self.div_count = 1
+                    elif self.in_lyrics and tag == "div":
+                        self.div_count += 1
+
+                def handle_endtag(self, tag):
+                    if self.in_lyrics and tag == "div":
+                        self.div_count -= 1
+                        if self.div_count <= 0:
+                            self.in_lyrics = False
+
+                def handle_data(self, data):
+                    if self.in_lyrics:
+                        self.lyrics.append(data)
+
+                def get_lyrics(self):
+                    return "\n".join(self.lyrics)
+
+            extractor = LyricsExtractor()
+            extractor.feed(page_resp.text)
+            lyrics_text = extractor.get_lyrics()
+
+            if not lyrics_text or len(lyrics_text) < 50:
+                # Fallback: try to find any lyrics-like content
+                import re
+                lyrics_match = re.search(r'<div[^>]*data-lyrics-container[^>]*>(.*?)</div>', page_resp.text, re.DOTALL)
+                if lyrics_match:
+                    lyrics_text = re.sub(r'<[^>]+>', '', lyrics_match.group(1))
+                    lyrics_text = lyrics_text.replace("\n", "\n")
+
+        except Exception as e:
+            logger.warning(f"Lyrics extraction failed: {e}")
+            lyrics_text = ""
+
+        await status.delete()
+
+        text = f"🎤 <b>{title}</b> — {artist}\n\n"
+        if lyrics_text and len(lyrics_text) > 50:
+            text += lyrics_text[:3500]
+            if len(lyrics_text) > 3500:
+                text += "\n\n<i>...текст обрізано</i>"
+        else:
+            text += f"🔗 <a href='{url}'>Відкрити текст на Genius</a>"
+
+        kb = InlineKeyboardMarkup([[back_btn(uid)]])
+        await msg.reply_text(text, reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)
+
+    except Exception as e:
+        logger.error(f"Lyrics error: {e}")
+        await status.edit_text("❌ Помилка отримання тексту.")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def dz_search_tracks(query, limit=15):
@@ -1427,7 +1519,11 @@ def artist_songs(artist, limit=50):
     return results[:limit]
 
 def find_track_for_download(track_name, artist_name):
-    """Find track URL for download. Chain: SoundCloud → Deezer → Spotify."""
+    """Find track URL for download. Chain: SoundCloud → Deezer.
+
+    IMPORTANT: Never returns Spotify URLs because yt-dlp cannot download
+    from Spotify without a premium account. Spotify is only used for search/metadata.
+    """
 
     queries = [
         f"{artist_name} {track_name}",
@@ -1437,7 +1533,7 @@ def find_track_for_download(track_name, artist_name):
     ]
 
     for query in queries:
-        # 1. SoundCloud
+        # 1. SoundCloud (primary source - works without auth)
         try:
             result = sc_search(query, limit=5)
             if result:
@@ -1457,7 +1553,7 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"SC search failed for '{query}': {e}")
 
-        # 2. Deezer
+        # 2. Deezer (secondary source - public API, some tracks have direct URLs)
         try:
             dz = dz_search_tracks(query, limit=5)
             if dz:
@@ -1477,7 +1573,8 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"Deezer search failed for '{query}': {e}")
 
-        # 3. Spotify
+        # 3. Spotify - ONLY for finding track info, then search that on SoundCloud/Deezer
+        # NEVER return Spotify URLs directly - yt-dlp can't download them
         if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
             try:
                 spotify = search_spotify_tracks(query, limit=5)
@@ -1485,18 +1582,25 @@ def find_track_for_download(track_name, artist_name):
                     for s in spotify:
                         title_lower = s["title"].lower()
                         if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                            return {
-                                "title": s["title"],
-                                "url": s["url"],
-                                "source": "spotify",
-                            }
-                    return {
-                        "title": spotify[0]["title"],
-                        "url": spotify[0]["url"],
-                        "source": "spotify",
-                    }
+                            # Found on Spotify - now search this exact title on SoundCloud
+                            sc_fallback = sc_search(s["title"], limit=3)
+                            if sc_fallback:
+                                return {
+                                    "title": sc_fallback[0]["title"],
+                                    "url": sc_fallback[0]["url"],
+                                    "source": "soundcloud",
+                                }
+                            # Try Deezer fallback
+                            dz_fallback = dz_search_tracks(s["title"], limit=3)
+                            if dz_fallback:
+                                return {
+                                    "title": dz_fallback[0]["title"],
+                                    "url": dz_fallback[0]["url"],
+                                    "source": "deezer",
+                                }
+                            break
             except Exception as e:
-                logger.warning(f"Spotify search failed for '{query}': {e}")
+                logger.warning(f"Spotify fallback search failed for '{query}': {e}")
 
     logger.error(f"Could not find track: {artist_name} - {track_name}")
     return None
@@ -1748,6 +1852,7 @@ async def async_mb_search(query, limit=10):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, mb_search_album, query, limit)
 
+
 async def async_mb_full_info(mbid):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, mb_get_full_album_info, mbid)
@@ -1755,6 +1860,186 @@ async def async_mb_full_info(mbid):
 async def async_find_track(track_name, artist_name):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, find_track_for_download, track_name, artist_name)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UNIFIED ALBUM SEARCH — Deezer + Spotify + MusicBrainz
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def search_all_albums(query, limit=10):
+    """Search albums across all sources: Deezer → Spotify → MusicBrainz."""
+    results = []
+    seen_ids = set()
+
+    # 1. Deezer (best for metadata + tracks with direct URLs)
+    try:
+        dz_albums = dz_search_albums(query, limit=limit)
+        for album in dz_albums:
+            album_id = f"dz_{album['id']}"
+            if album_id not in seen_ids:
+                seen_ids.add(album_id)
+                results.append({
+                    "id": album["id"],
+                    "name": album["name"],
+                    "artist": album["artist"],
+                    "year": album["year"],
+                    "total_tracks": album["total_tracks"],
+                    "image_url": album.get("image_url", ""),
+                    "source": "deezer",
+                })
+    except Exception as e:
+        logger.warning(f"Deezer album search failed: {e}")
+
+    # 2. Spotify (if credentials available)
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        try:
+            sp_albums = search_spotify_and_format(query, limit=limit)
+            for album in sp_albums:
+                album_id = f"sp_{album['id']}"
+                if album_id not in seen_ids:
+                    seen_ids.add(album_id)
+                    results.append({
+                        "id": album["id"],
+                        "name": album["name"],
+                        "artist": album["artist"],
+                        "year": album["year"],
+                        "total_tracks": album["total_tracks"],
+                        "image_url": album.get("image_url", ""),
+                        "source": "spotify",
+                    })
+        except Exception as e:
+            logger.warning(f"Spotify album search failed: {e}")
+
+    # 3. MusicBrainz (fallback for indie/obscure releases)
+    try:
+        mb_releases = mb_search_album(query, limit=limit)
+        for rel in mb_releases:
+            info = mb_format_album(rel)
+            album_id = f"mb_{info['mbid']}"
+            if album_id not in seen_ids:
+                seen_ids.add(album_id)
+                results.append({
+                    "id": info["mbid"],
+                    "name": info["name"],
+                    "artist": info["artist"],
+                    "year": info["year"],
+                    "total_tracks": info["total_tracks"],
+                    "image_url": "",
+                    "source": "musicbrainz",
+                })
+    except Exception as e:
+        logger.warning(f"MusicBrainz album search failed: {e}")
+
+    logger.info(f"Album search '{query}': {len(results)} results (Deezer+Spotify+MB)")
+    return results[:limit]
+
+async def do_album_search(update, query, uid, ctx):
+    """New unified album search across all sources."""
+    l = get_lang(uid)
+    msg = await update.message.reply_text(
+        f"💿 Шукаю альбом: <b>{query}</b>…", parse_mode="HTML"
+    )
+
+    albums = await search_all_albums(query, limit=10)
+
+    if not albums:
+        prompts = {
+            "uk": "😔 Альбоми не знайдено.\n\n💡 Спробуй:\n* Точнішу назву: <code>Yanix SS 20</code>\n* Формат: <code>Артист НазваАльбому</code>",
+            "ru": "😔 Альбомы не найдены.\n\n💡 Попробуй:\n* Точное название: <code>Yanix SS 20</code>\n* Формат: <code>Артист НазваниеАльбома</code>",
+            "en": "😔 No albums found.\n\n💡 Try:\n* Exact name: <code>Yanix SS 20</code>\n* Format: <code>Artist AlbumName</code>",
+        }
+        await msg.edit_text(prompts.get(l, prompts["en"]), parse_mode="HTML")
+        return
+
+    kb = []
+    for album in albums[:8]:
+        source_icon = "🟣" if album["source"] == "deezer" else "🟢" if album["source"] == "spotify" else "🔴"
+        name = album["name"][:30]
+        artist = album["artist"][:20]
+        year = album["year"]
+        tracks_count = album["total_tracks"]
+
+        if album["source"] == "deezer":
+            callback = f"dz_album|{album['id']}"
+        elif album["source"] == "spotify":
+            callback = f"sp_album|{album['id']}"
+        else:
+            callback = f"mb_album|{album['id']}"
+
+        kb.append([
+            InlineKeyboardButton(
+                f"{source_icon} {name} — {artist} ({year}, {tracks_count} треків)",
+                callback_data=callback
+            )
+        ])
+
+    kb.append([back_btn(uid)])
+
+    header = {
+        "uk": f"🎵 <b>Результати пошуку альбомів:</b> «{query}»\n\n🟣 — Deezer | 🟢 — Spotify | 🔴 — MusicBrainz\n\nОбери альбом 👇",
+        "ru": f"🎵 <b>Результаты поиска альбомов:</b> «{query}»\n\n🟣 — Deezer | 🟢 — Spotify | 🔴 — MusicBrainz\n\nВыбери альбом 👇",
+        "en": f"🎵 <b>Album search results:</b> «{query}»\n\n🟣 — Deezer | 🟢 — Spotify | 🔴 — MusicBrainz\n\nChoose an album 👇",
+    }
+
+    await msg.edit_text(
+        header.get(l, header["en"]),
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="HTML"
+    )
+
+async def show_deezer_album(msg, album_id, uid, ctx):
+    """Show Deezer album with tracks."""
+    l = get_lang(uid)
+    status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
+
+    album = dz_get_album_tracks(album_id)
+    if not album:
+        await status.edit_text("❌ Не вдалося отримати дані.")
+        return
+
+    ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
+    ctx.bot_data.setdefault("deezer_album_cache", {})[ck] = album
+    ctx.bot_data["last_deezer_album_ck"] = ck
+
+    text = (
+        f"📀 <b>{album['name']}</b>\n\n"
+        f"🎤 {album['artist']}\n"
+        f"📅 {album['year']}\n"
+        f"🏷 {album['label']}\n"
+        f"🎵 {album['total_tracks']} треків\n"
+        f"⏱ {album['total_duration']}\n\n"
+    )
+
+    kb = []
+    for i, track in enumerate(album["tracks"][:20]):
+        text += f"{i+1}. {track['name']} — {track['duration']}\n"
+        kb.append([
+            InlineKeyboardButton(
+                f"▶️ {i+1}. {track['name'][:35]} ({track['duration']})",
+                callback_data=f"dz_track|{ck}|{i}"
+            )
+        ])
+
+    zip_label = {"uk":"📦 Завантажити ZIP","ru":"📦 Скачать ZIP","en":"📦 Download ZIP"}.get(l, "📦 Download ZIP")
+    kb.append([InlineKeyboardButton(zip_label, callback_data="dz_albumzip")])
+    kb.append([back_btn(uid)])
+
+    await status.delete()
+
+    image_url = album.get("image_url", "")
+    if image_url:
+        try:
+            await msg.reply_photo(
+                photo=image_url,
+                caption=text[:1024],
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode="HTML"
+            )
+            return
+        except Exception as e:
+            logger.error(f"Deezer album photo failed: {e}")
+
+    await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 
 # ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
@@ -2183,7 +2468,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Lyrics (Premium)
-    
+    if data == "m:lyrics":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "lyrics_input")
         prompts = {
             "uk": "🎤 Введи назву пісні та артиста для тексту:",
@@ -2251,6 +2539,53 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text("❌ Посилання застаріло. Спробуй знайти знову.")
             return
         await do_download(q.message, url, title, artist, uid, ctx)
+        return
+
+    # Deezer альбом
+    if data.startswith("dz_album|"):
+        album_id = data.split("|", 1)[1]
+        await show_deezer_album(q.message, album_id, uid, ctx)
+        return
+
+    if data.startswith("dz_track|"):
+        parts = data.split("|", 2)
+        album_ck = parts[1]
+        track_idx = int(parts[2])
+        album_data = ctx.bot_data.get("deezer_album_cache", {}).get(album_ck)
+        if not album_data or track_idx >= len(album_data.get("tracks", [])):
+            await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
+            return
+        track = album_data["tracks"][track_idx]
+        # Deezer tracks have direct URLs - use them directly
+        if track.get("url"):
+            await do_download(q.message, track["url"], track["name"], track["artists"], uid, ctx)
+        else:
+            # Fallback search
+            status = await q.message.reply_text(
+                f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML"
+            )
+            result = await async_find_track(track["name"], track["artists"])
+            if not result:
+                await status.edit_text(
+                    f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML"
+                )
+                return
+            await status.delete()
+            await do_download(
+                q.message, result["url"], track["name"], track["artists"], uid, ctx
+            )
+        return
+
+    if data == "dz_albumzip":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        album_ck = ctx.bot_data.get("last_deezer_album_ck", "")
+        album_data = ctx.bot_data.get("deezer_album_cache", {}).get(album_ck)
+        if not album_data:
+            await q.message.reply_text("❌ Дані альбому застаріли.")
+            return
+        await do_download_deezer_album_zip(q.message, album_data, uid, ctx)
         return
 
     # Spotify альбом
@@ -2535,7 +2870,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Album search
     if state == "album_search":
         set_state(uid, "")
-        await do_mb_album_search(update, text, uid, ctx)
+        await do_album_search(update, text, uid, ctx)
         return
 
     # ZIP album search
@@ -2608,6 +2943,15 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Admin input
     if uid == ADMIN_ID and state.startswith("adm:"):
         await handle_admin_input(update, ctx, state, text)
+        return
+
+    # Lyrics input
+    if state == "lyrics_input":
+        set_state(uid, "")
+        if not GENIUS_TOKEN:
+            await update.message.reply_text("❌ Тексти пісень тимчасово недоступні.")
+            return
+        await show_lyrics(update.message, text, uid, ctx)
         return
 
     # Default search
@@ -2915,11 +3259,104 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     await status.delete()
     os.unlink(zip_path)
 
+async def do_download_deezer_album_zip(msg, album_data, uid, ctx):
+    """Download Deezer album as ZIP - uses direct Deezer track URLs when available."""
+    l = get_lang(uid)
+    status = await msg.reply_text(
+        f"⬇️ Завантажую альбом: <b>{album_data['name']}</b>\n"
+        f"<i>Джерело: Deezer</i>",
+        parse_mode="HTML"
+    )
+
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    tracks_with_url = []
+    total = len(album_data["tracks"])
+
+    for i, track in enumerate(album_data["tracks"]):
+        await status.edit_text(
+            f"🔍 {i+1}/{total}: <b>{track['name']}</b>…",
+            parse_mode="HTML"
+        )
+        # Try direct Deezer URL first
+        if track.get("url"):
+            tracks_with_url.append({
+                "title": f"{track['artists']} — {track['name']}",
+                "url": track["url"],
+                "source": "deezer",
+            })
+        else:
+            # Fallback search
+            result = await async_find_track(track["name"], track["artists"])
+            if result:
+                tracks_with_url.append({
+                    "title": f"{track['artists']} — {track['name']}",
+                    "url": result["url"],
+                    "source": result["source"],
+                })
+        await asyncio.sleep(0.3)
+
+    if not tracks_with_url:
+        await status.edit_text("😔 Не знайдено жодного трека.")
+        return
+
+    sources = ", ".join(set(t["source"] for t in tracks_with_url))
+    await status.edit_text(
+        f"⬇️ Завантажую {len(tracks_with_url)}/{total} треків…\n"
+        f"<i>Джерела: {sources}</i>\n"
+        f"<i>Формується ZIP…</i>",
+        parse_mode="HTML"
+    )
+
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+    if not zip_path:
+        await status.edit_text("❌ Помилка створення архіву.")
+        return
+
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
+    if size_mb > 2000:
+        await status.edit_text(f"❌ Архів {size_mb:.1f} МБ — завеликий.")
+        return
+
+    await status.edit_text("📤 Відправляю ZIP…")
+    safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
+
+    thumb = album_data.get("image_url", "")
+    if thumb:
+        try:
+            thumb_resp = requests.get(thumb, timeout=10)
+            if thumb_resp.status_code == 200:
+                with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp_thumb:
+                    tmp_thumb.write(thumb_resp.content)
+                    tmp_thumb.flush()
+                    await msg.reply_document(
+                        document=open(zip_path, 'rb'),
+                        thumbnail=tmp_thumb.name,
+                        filename=f"{safe_name}.zip",
+                        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+                        parse_mode="HTML"
+                    )
+                    os.unlink(tmp_thumb.name)
+                    await status.delete()
+                    os.unlink(zip_path)
+                    return
+        except Exception as e:
+            logger.warning(f"Deezer ZIP thumbnail failed: {e}")
+
+    await msg.reply_document(
+        document=open(zip_path, 'rb'),
+        filename=f"{safe_name}.zip",
+        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+        parse_mode="HTML"
+    )
+    await status.delete()
+    os.unlink(zip_path)
+
 async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     l = get_lang(uid)
     status = await msg.reply_text(
         f"⬇️ Завантажую альбом: <b>{album_data['name']}</b>\n"
-        f"<i>Шукаю треки: SoundCloud → Spotify…</i>",
+        f"<i>Шукаю треки: SoundCloud → Deezer…</i>",
         parse_mode="HTML"
     )
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
@@ -2999,23 +3436,24 @@ async def do_zip_album_search(update, query, uid, ctx):
     msg = await update.message.reply_text(
         f"📦 Шукаю альбом для ZIP: <b>{query}</b>…", parse_mode="HTML"
     )
-    spotify_results = await async_search_spotify(query, limit=5)
-    mb_results = await async_mb_search(query, limit=5)
+
+    # Search all sources
+    all_albums = await search_all_albums(query, limit=8)
 
     kb = []
-    for album in spotify_results[:3]:
+    for album in all_albums[:6]:
+        source_icon = "🟣" if album["source"] == "deezer" else "🟢" if album["source"] == "spotify" else "🔴"
+        if album["source"] == "deezer":
+            callback = f"dz_album|{album['id']}"
+        elif album["source"] == "spotify":
+            callback = f"sp_album|{album['id']}"
+        else:
+            callback = f"mb_album|{album['id']}"
+
         kb.append([
             InlineKeyboardButton(
-                f"🟢 Spotify: {album['name'][:30]} — {album['artist'][:20]}",
-                callback_data=f"sp_album|{album['id']}"
-            )
-        ])
-    for rel in mb_results[:3]:
-        info = mb_format_album(rel)
-        kb.append([
-            InlineKeyboardButton(
-                f"🔴 MusicBrainz: {info['name'][:30]} — {info['artist'][:20]}",
-                callback_data=f"mb_album|{info['mbid']}"
+                f"{source_icon} {album['name'][:30]} — {album['artist'][:20]}",
+                callback_data=callback
             )
         ])
     kb.append([back_btn(uid)])
@@ -3026,8 +3464,9 @@ async def do_zip_album_search(update, query, uid, ctx):
 
     await msg.edit_text(
         "📦 <b>Обери альбом для ZIP:</b>\n\n"
-        "🟢 — Spotify (краща якість метаданих)\n"
-        "🔴 — MusicBrainz (більше незалежної музики)",
+        "🟣 — Deezer (прямі посилання на треки)\n"
+        "🟢 — Spotify (метадані)\n"
+        "🔴 — MusicBrainz (незалежна музика)",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
