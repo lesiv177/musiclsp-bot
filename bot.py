@@ -128,114 +128,6 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 # Якщо не заповнені — Spotify функції не працюватимуть
 
-# ─── YouTube Configuration ────────────────────────────────────────────────────
-YOUTUBE_VISITOR_DATA = os.environ.get("YOUTUBE_VISITOR_DATA", "")
-YOUTUBE_PO_TOKEN = os.environ.get("YOUTUBE_PO_TOKEN", "")
-
-# ─── YouTube Search & Download ────────────────────────────────────────────────
-
-def yt_search(query, limit=10):
-    """Search YouTube for music videos."""
-    try:
-        opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": True,
-            "noplaylist": True,
-            "socket_timeout": 30,
-            "retries": 3,
-        }
-
-        # Додаємо visitor_data якщо є
-        if YOUTUBE_VISITOR_DATA:
-            opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["web"],
-                    "visitor_data": [YOUTUBE_VISITOR_DATA],
-                }
-            }
-
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            result = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
-
-        tracks = []
-        for entry in (result.get("entries") or []):
-            if not entry:
-                continue
-            title = entry.get("title", "Unknown")
-            uploader = entry.get("uploader", "YouTube")
-            tracks.append({
-                "title": f"{uploader} - {title}",
-                "url": entry.get("webpage_url") or entry.get("url", ""),
-                "id": entry.get("id", ""),
-                "duration": fmt_dur(entry.get("duration", 0)),
-                "channel": uploader,
-                "source": "youtube",
-            })
-        logger.info(f"YouTube search: {len(tracks)} results for '{query}'")
-        return tracks
-    except Exception as e:
-        logger.warning(f"YouTube search failed: {e}")
-        return []
-
-def yt_download(url, out_dir, quality="192"):
-    """Download audio from YouTube."""
-    opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": quality,
-            }
-        ],
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-    }
-
-    # Додаємо visitor_data та po_token якщо є
-    extractor_args = {"youtube": {"player_client": ["web"]}}
-    if YOUTUBE_VISITOR_DATA:
-        extractor_args["youtube"]["visitor_data"] = [YOUTUBE_VISITOR_DATA]
-    if YOUTUBE_PO_TOKEN:
-        extractor_args["youtube"]["po_token"] = [YOUTUBE_PO_TOKEN]
-
-    opts["extractor_args"] = extractor_args
-
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-        if info:
-            mp3_files = list(Path(out_dir).glob("*.mp3"))
-            if mp3_files:
-                return str(mp3_files[0])
-            # Конвертація якщо не mp3
-            for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg"]:
-                files = list(Path(out_dir).glob(ext))
-                if files:
-                    input_file = str(files[0])
-                    output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
-                    try:
-                        subprocess.run(
-                            ["ffmpeg", "-i", input_file, "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{quality}k", "-y", output_file],
-                            check=True, capture_output=True, timeout=60,
-                        )
-                        if os.path.exists(output_file):
-                            os.remove(input_file)
-                            return output_file
-                    except Exception:
-                        return input_file
-    except Exception as e:
-        logger.error(f"YouTube download failed: {e}")
-    return None
-
-
-
 # ─── Genius API Token (з env) ─────────────────────────────────────────────────
 GENIUS_TOKEN = os.environ.get("GENIUS_TOKEN", "")
 # Якщо не заповнений — тексти пісень не працюватимуть
@@ -1344,21 +1236,12 @@ def sc_search(query, limit=15):
     return tracks
 
 def search_all(query, limit=10):
-    """Search YouTube → SoundCloud → Deezer → Spotify. Return unified results."""
+    """Search SoundCloud → Deezer → Spotify. Return unified results."""
     results = []
     seen_urls = set()
     seen_titles = set()
 
-    # 1. YouTube (основне джерело)
-    yt = yt_search(query, limit)
-    for track in yt:
-        key = track["url"]
-        if key and key not in seen_urls:
-            seen_urls.add(key)
-            seen_titles.add(track["title"].lower().strip())
-            results.append(track)
-
-    # 2. SoundCloud
+    # 1. SoundCloud (основне джерело)
     sc = sc_search(query, limit)
     for track in sc:
         key = track["url"]
@@ -1367,7 +1250,7 @@ def search_all(query, limit=10):
             seen_titles.add(track["title"].lower().strip())
             results.append(track)
 
-    # 3. Deezer
+    # 2. Deezer (додаткове джерело)
     dz = dz_search_tracks(query, limit)
     for track in dz:
         key = track["url"]
@@ -1377,7 +1260,7 @@ def search_all(query, limit=10):
             seen_titles.add(title_key)
             results.append(track)
 
-    # 4. Spotify (якщо є credentials)
+    # 3. Spotify (якщо є credentials)
     if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         try:
             spotify_tracks = search_spotify_tracks(query, limit=limit)
@@ -1391,7 +1274,7 @@ def search_all(query, limit=10):
         except Exception as e:
             logger.warning(f"Spotify search failed: {e}")
 
-    logger.info(f"Total search results for '{query}': {len(results)} (YT:{len(yt)}, SC:{len(sc)}, DZ:{len(dz)})")
+    logger.info(f"Total search results for '{query}': {len(results)} (SC:{len(sc)}, DZ:{len(dz)})")
     return results[:limit + 5]
 
 
@@ -1544,7 +1427,7 @@ def artist_songs(artist, limit=50):
     return results[:limit]
 
 def find_track_for_download(track_name, artist_name):
-    """Find track URL for download. Chain: YouTube → SoundCloud → Deezer → Spotify."""
+    """Find track URL for download. Chain: SoundCloud → Deezer → Spotify."""
 
     queries = [
         f"{artist_name} {track_name}",
@@ -1554,27 +1437,7 @@ def find_track_for_download(track_name, artist_name):
     ]
 
     for query in queries:
-        # 1. YouTube
-        try:
-            result = yt_search(query, limit=5)
-            if result:
-                for r in result:
-                    title_lower = r["title"].lower()
-                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                        return {
-                            "title": r["title"],
-                            "url": r["url"],
-                            "source": "youtube",
-                        }
-                return {
-                    "title": result[0]["title"],
-                    "url": result[0]["url"],
-                    "source": "youtube",
-                }
-        except Exception as e:
-            logger.warning(f"YouTube search failed for '{query}': {e}")
-
-        # 2. SoundCloud
+        # 1. SoundCloud
         try:
             result = sc_search(query, limit=5)
             if result:
@@ -1594,7 +1457,7 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"SC search failed for '{query}': {e}")
 
-        # 3. Deezer
+        # 2. Deezer
         try:
             dz = dz_search_tracks(query, limit=5)
             if dz:
@@ -1614,7 +1477,7 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"Deezer search failed for '{query}': {e}")
 
-        # 4. Spotify
+        # 3. Spotify
         if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
             try:
                 spotify = search_spotify_tracks(query, limit=5)
@@ -1861,10 +1724,6 @@ def mb_format_album(release):
     }
 
 # ─── Асинхронні обгортки ──────────────────────────────────────────────────────
-async def async_yt_search(query, limit=10):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, yt_search, query, limit)
-
 async def async_search(query, limit=10):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, search_all, query, limit)
@@ -1899,7 +1758,7 @@ async def async_find_track(track_name, artist_name):
 
 # ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    """Download MP3 from YouTube, SoundCloud, Deezer or Spotify."""
+    """Download MP3 from SoundCloud, Deezer or Spotify."""
 
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
@@ -1921,18 +1780,7 @@ def download_mp3(url, out_dir, quality="192"):
         "extractor_retries": 3,
     }
 
-    # YouTube: додаємо visitor_data та po_token
-    if "youtube.com" in url or "youtu.be" in url:
-        extractor_args = {"youtube": {"player_client": ["web"]}}
-        if YOUTUBE_VISITOR_DATA:
-            extractor_args["youtube"]["visitor_data"] = [YOUTUBE_VISITOR_DATA]
-            logger.info("Using YouTube visitor_data")
-        if YOUTUBE_PO_TOKEN:
-            extractor_args["youtube"]["po_token"] = [YOUTUBE_PO_TOKEN]
-            logger.info("Using YouTube po_token")
-        base_opts["extractor_args"] = extractor_args
-
-    # Deezer ARL cookie
+    # Add Deezer ARL cookie if available and URL is from Deezer
     if "deezer.com" in url:
         if DEEZER_ARL:
             base_opts["cookies"] = {"arl": DEEZER_ARL}
@@ -1951,7 +1799,7 @@ def download_mp3(url, out_dir, quality="192"):
                 return str(mp3_files[0])
             # Конвертація якщо не mp3
             for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                files = list(Path(out_dir).glob(ext))
+                    files = list(Path(out_dir).glob(ext))
                 if files:
                     input_file = str(files[0])
                     output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
