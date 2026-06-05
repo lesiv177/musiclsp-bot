@@ -1245,7 +1245,7 @@ def search_all(query, limit=10):
     sc = sc_search(query, limit)
     for track in sc:
         key = track["url"]
-        if key and key not in seen_urls:
+        if key not in seen_urls:
             seen_urls.add(key)
             seen_titles.add(track["title"].lower().strip())
             results.append(track)
@@ -1799,8 +1799,8 @@ def download_mp3(url, out_dir, quality="192"):
                 return str(mp3_files[0])
             # Конвертація якщо не mp3
             for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                    files = list(Path(out_dir).glob(ext))
-            if files:
+                files = list(Path(out_dir).glob(ext))
+                if files:
                     input_file = str(files[0])
                     output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
                     try:
