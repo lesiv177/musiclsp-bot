@@ -1799,7 +1799,7 @@ def download_mp3(url, out_dir, quality="192"):
                 return str(mp3_files[0])
             # Конвертація якщо не mp3
             for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                files = list(Path(out_dir).glob(ext))
+                                    files = list(Path(out_dir).glob(ext))
                 if files:
                     input_file = str(files[0])
                     output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
