@@ -238,6 +238,28 @@ def fmt_dur(s):
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
 
+
+def truncate_html(text, max_length=4000):
+    """Truncate text safely, avoiding cutting HTML tags."""
+    if len(text) <= max_length:
+        return text
+    truncated = text[:max_length]
+    last_open = truncated.rfind('<')
+    last_close = truncated.rfind('>')
+    if last_open > last_close:
+        truncated = truncated[:last_open]
+    open_tags = re.findall(r'<(b|i|code|pre)[^>]*>', truncated)
+    close_tags = re.findall(r'</(b|i|code|pre)>', truncated)
+    tag_count = {}
+    for tag in open_tags:
+        tag_count[tag] = tag_count.get(tag, 0) + 1
+    for tag in close_tags:
+        tag_count[tag] = tag_count.get(tag, 0) - 1
+    for tag, count in tag_count.items():
+        if count > 0:
+            truncated += f'</{tag}>' * count
+    return truncated + '...'
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  LAST.FM API — СХОЖА МУЗИКА, ПОШУК, МЕТАДАНІ
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3246,7 +3268,7 @@ async def show_mb_album(msg, mbid, uid, ctx):
         try:
             await msg.reply_photo(
                 photo=image_url,
-                caption=text[:1024],
+                caption=truncate_html(text, 1000),
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="HTML"
             )
@@ -3256,7 +3278,7 @@ async def show_mb_album(msg, mbid, uid, ctx):
             try:
                 await msg.reply_document(
                     document=image_url,
-                    caption=text[:1024],
+                    caption=truncate_html(text, 1000),
                     reply_markup=InlineKeyboardMarkup(kb),
                     parse_mode="HTML"
                 )
@@ -3264,7 +3286,7 @@ async def show_mb_album(msg, mbid, uid, ctx):
             except Exception as e2:
                 logger.error(f"MB Document send also failed: {e2}")
 
-    await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    await msg.reply_text(truncate_html(text), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 
 # ─── Bandcamp: Показати альбом ────────────────────────────────────────────────
@@ -3303,7 +3325,7 @@ async def show_bandcamp_album(msg, album_url, uid, ctx):
         try:
             await msg.reply_photo(
                 photo=image_url,
-                caption=text[:1024],
+                caption=truncate_html(text, 1000),
                 reply_markup=InlineKeyboardMarkup(kb),
                 parse_mode="HTML"
             )
@@ -3996,9 +4018,9 @@ async def show_playlist(msg, pid, uid, ctx):
     kb.append([back_btn(uid)])
 
     try:
-        await msg.edit_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        await msg.edit_text(truncate_html(text), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     except Exception:
-        await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        await msg.reply_text(truncate_html(text), reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
 
 # ─── Радіо — ПОКРАЩЕНИЙ з Last.fm ────────────────────────────────────────────
