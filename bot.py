@@ -239,6 +239,16 @@ def fmt_dur(s):
     return f"{m}:{sec:02d}"
 
 
+def escape_html(text):
+    """Escape HTML special characters in text."""
+    if not text:
+        return ""
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
 def truncate_html(text, max_length=4000):
     """Truncate text safely, avoiding cutting HTML tags."""
     if len(text) <= max_length:
@@ -3201,7 +3211,7 @@ async def show_dz_album(msg, album_id, uid, ctx):
     ctx.bot_data["last_dz_album_ck"] = ck
 
     text = (
-        f"📀 <b>{album['name']}</b>\n\n"
+        f"📀 <b>{escape_html(album['name'])}</b>\n\n"
         f"🎤 {album['artist']}\n"
         f"📅 {album['year']}\n"
         f"🎵 {album['total_tracks']} треків\n"
@@ -3211,7 +3221,7 @@ async def show_dz_album(msg, album_id, uid, ctx):
     kb = []
     for i, track in enumerate(album["tracks"][:15]):
         kb.append([InlineKeyboardButton(
-            f"▶️ {i+1}. {track['name'][:35]}",
+            f"▶️ {i+1}. {escape_html(track['name'])[:35]}",
             callback_data=f"dz_track|{ck}|{i}"
         )])
 
@@ -3236,8 +3246,8 @@ async def show_mb_album(msg, mbid, uid, ctx):
     ctx.bot_data["last_mb_album_ck"] = ck
 
     text = (
-        f"📀 <b>{album['name']}</b>\n\n"
-        f"🎤 <b>Виконавець:</b> {album['artist']}\n"
+        f"📀 <b>{escape_html(album['name'])}</b>\n\n"
+        f"🎤 <b>Виконавець:</b> {escape_html(album['artist'])}\n"
         f"📅 <b>Рік:</b> {album['year']}\n"
         f"🏷 <b>Лейбл:</b> {album['label']}\n"
         f"🎵 <b>Треків:</b> {album['total_tracks']}\n"
@@ -3246,10 +3256,10 @@ async def show_mb_album(msg, mbid, uid, ctx):
     )
     kb = []
     for i, track in enumerate(album["tracks"]):
-        text += f"{i+1}. {track['name']} — {track['duration']}\n"
+        text += f"{i+1}. {escape_html(track['name'])} — {track['duration']}\n"
         kb.append([
             InlineKeyboardButton(
-                f"▶️ {i+1}. {track['name'][:35]} ({track['duration']})",
+                f"▶️ {i+1}. {escape_html(track['name'])[:35]} ({track['duration']})",
                 callback_data=f"mb_track|{ck}|{i}"
             )
         ])
@@ -3302,7 +3312,7 @@ async def show_bandcamp_album(msg, album_url, uid, ctx):
     ctx.bot_data["last_bandcamp_album_ck"] = ck
 
     text = (
-        f"📀 <b>{album['name']}</b>\n\n"
+        f"📀 <b>{escape_html(album['name'])}</b>\n\n"
         f"🎤 {album['artist']}\n"
         f"🎵 {album['total_tracks']} треків\n"
         f"🔗 Bandcamp"
@@ -3311,7 +3321,7 @@ async def show_bandcamp_album(msg, album_url, uid, ctx):
     kb = []
     for i, track in enumerate(album["tracks"][:15]):
         kb.append([InlineKeyboardButton(
-            f"▶️ {i+1}. {track['name'][:35]}",
+            f"▶️ {i+1}. {escape_html(track['name'])[:35]}",
             callback_data=f"bc_track|{ck}|{i}"
         )])
 
@@ -3350,12 +3360,12 @@ async def show_spotify_album(msg, album_id, uid, ctx):
     ctx.bot_data.setdefault("spotify_album_cache", {})[ck] = album
     ctx.bot_data["last_spotify_album_ck"] = ck
 
-    text = f"📀 <b>{album['name']}</b>\n\n🎤 {album['artist']}\n📅 {album['year']}\n🎵 {album['total_tracks']} треків"
+    text = f"📀 <b>{escape_html(album['name'])}</b>\n\n🎤 {escape_html(album['artist'])}\n📅 {album['year']}\n🎵 {album['total_tracks']} треків"
 
     kb = []
     for i, track in enumerate(album["tracks"][:15]):
         kb.append([InlineKeyboardButton(
-            f"▶️ {i+1}. {track['name'][:35]}",
+            f"▶️ {i+1}. {escape_html(track['name'])[:35]}",
             callback_data=f"sp_track|{ck}|{i}"
         )])
 
@@ -3471,7 +3481,7 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     await msg.reply_document(
         document=open(zip_path, 'rb'),
         filename=f"{safe_name}.zip",
-        caption=f"💿 {album_data['name']}\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків",
+        caption=f"💿 {escape_html(album_data['name'])}\n🎤 {escape_html(album_data['artist'])}\n📦 {len(tracks_with_url)} треків",
         parse_mode="HTML"
     )
     await status.delete()
@@ -3538,7 +3548,7 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
                         document=open(zip_path, 'rb'),
                         thumbnail=tmp_thumb.name,
                         filename=f"{safe_name}.zip",
-                        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+                        caption=f"💿 <b>{escape_html(album_data['name'])}</b>\n🎤 {escape_html(album_data['artist'])}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
                         parse_mode="HTML"
                     )
                     os.unlink(tmp_thumb.name)
@@ -3551,7 +3561,7 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     await msg.reply_document(
         document=open(zip_path, 'rb'),
         filename=f"{safe_name}.zip",
-        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
+        caption=f"💿 <b>{escape_html(album_data['name'])}</b>\n🎤 {escape_html(album_data['artist'])}\n📦 {len(tracks_with_url)} треків\n📍 Джерела: {sources}",
         parse_mode="HTML"
     )
     await status.delete()
@@ -3608,7 +3618,7 @@ async def do_download_bandcamp_album_zip(msg, album_data, uid, ctx):
     await msg.reply_document(
         document=open(zip_path, 'rb'),
         filename=f"{safe_name}.zip",
-        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n🔗 Bandcamp",
+        caption=f"💿 <b>{escape_html(album_data['name'])}</b>\n🎤 {escape_html(album_data['artist'])}\n📦 {len(tracks_with_url)} треків\n🔗 Bandcamp",
         parse_mode="HTML"
     )
     await status.delete()
