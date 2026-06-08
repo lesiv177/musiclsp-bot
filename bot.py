@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MusicLSP v3.1 — Deezer + SoundCloud + Spotify
-Робота без cookies, Deezer API для пошуку, SoundCloud/Deezer/Spotify для завантаження
+MusicLSP v3.2 — Deezer + SoundCloud + Spotify + Last.fm + Bandcamp
+Робота без cookies, Deezer API для пошуку, SoundCloud/Deezer/Spotify/Last.fm/Bandcamp для завантаження
 """
 
 import os
@@ -34,7 +34,7 @@ from contextlib import closing
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, 
+    Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 import yt_dlp
@@ -61,7 +61,7 @@ if DATABASE_URL and POSTGRES_AVAILABLE:
         test_conn = psycopg2.connect(db_url, sslmode='require')
         test_conn.close()
         USE_POSTGRES = True
-        logger.info("✅ Using PostgreSQL database")
+        logger.info("Using PostgreSQL database")
     except Exception as e:
         logger.warning(f"PostgreSQL connection failed: {e}, falling back to SQLite")
         USE_POSTGRES = False
@@ -77,6 +77,10 @@ BOT_NAME = "MusicLSP"
 AUTH_BOT = "@MusicLSPauth_bot"
 SEARCH_PER_PAGE = 10
 
+# ─── Last.fm API ──────────────────────────────────────────────────────────────
+LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY", "00cea7fe90e17ea4c236e0d2ab7292f9")
+LASTFM_API_SECRET = os.environ.get("LASTFM_API_SECRET", "63de3133664ff404afafba8a12eaa034")
+
 # ─── Deezer ARL Cookie (для повного завантаження, не обов'язково) ─────────────
 DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
 
@@ -86,42 +90,19 @@ if not DEEZER_ARL and os.path.exists(DEEZER_COOKIES_FILE):
     try:
         with open(DEEZER_COOKIES_FILE, 'r') as f:
             for line in f:
-                if line.strip().startswith('.deezer.com') and '	arl	' in line:
-                    parts = line.strip().split('	')
+                if line.strip().startswith('.deezer.com') and ' arl ' in line:
+                    parts = line.strip().split(' ')
                     if len(parts) >= 7:
                         DEEZER_ARL = parts[6]
-                        logger.info("✅ Deezer ARL loaded from cookies file")
+                        logger.info("Deezer ARL loaded from cookies file")
                         break
     except Exception as e:
         logger.warning(f"Failed to read Deezer cookies file: {e}")
 
 if DEEZER_ARL:
-    logger.info("✅ Deezer ARL configured — full track downloads enabled")
+    logger.info("Deezer ARL configured — full track downloads enabled")
 else:
-    logger.info("⚠️ Deezer ARL not found — only 30s previews available")
-
-# ─── Spotify Credentials# ─── Deezer ARL Cookie (для повного завантаження, не обов'язково) ─────────────
-DEEZER_ARL = os.environ.get("DEEZER_ARL", "")
-
-# Спробуємо прочитати ARL з cookies файлу (якщо є)
-DEEZER_COOKIES_FILE = "www.deezer.com_cookies.txt"
-if not DEEZER_ARL and os.path.exists(DEEZER_COOKIES_FILE):
-    try:
-        with open(DEEZER_COOKIES_FILE, 'r') as f:
-            for line in f:
-                if line.strip().startswith('.deezer.com') and '	arl	' in line:
-                    parts = line.strip().split('	')
-                    if len(parts) >= 7:
-                        DEEZER_ARL = parts[6]
-                        logger.info("✅ Deezer ARL loaded from cookies file")
-                        break
-    except Exception as e:
-        logger.warning(f"Failed to read Deezer cookies file: {e}")
-
-if DEEZER_ARL:
-    logger.info("✅ Deezer ARL configured — full track downloads enabled")
-else:
-    logger.info("⚠️ Deezer ARL not found — only 30s previews available")
+    logger.info("Deezer ARL not found — only 30s previews available")
 
 # ─── Spotify Credentials (з env) ──────────────────────────────────────────────
 SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
@@ -256,6 +237,243 @@ def fmt_dur(s):
         return "—"
     m, sec = divmod(int(s), 60)
     return f"{m}:{sec:02d}"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LAST.FM API — СХОЖА МУЗИКА, ПОШУК, МЕТАДАНІ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def lastfm_request(method, **params):
+    """Make Last.fm API request."""
+    if not LASTFM_API_KEY:
+        return None
+    base_url = "http://ws.audioscrobbler.com/2.0/"
+    params["api_key"] = LASTFM_API_KEY
+    params["method"] = method
+    params["format"] = "json"
+    try:
+        url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            logger.warning(f"Last.fm API error: {data.get('message', 'Unknown error')}")
+            return None
+        return data
+    except Exception as e:
+        logger.warning(f"Last.fm request failed ({method}): {e}")
+        return None
+
+def lastfm_get_similar_artists(artist_name, limit=10):
+    """Get similar artists from Last.fm."""
+    data = lastfm_request("artist.getsimilar", artist=artist_name, limit=limit)
+    if not data:
+        return []
+    similar = data.get("similarartists", {}).get("artist", [])
+    return [a.get("name", "").strip() for a in similar if a.get("name")]
+
+def lastfm_get_similar_tracks(artist, track, limit=10):
+    """Get similar tracks from Last.fm."""
+    data = lastfm_request("track.getsimilar", artist=artist, track=track, limit=limit)
+    if not data:
+        return []
+    similar = data.get("similartracks", {}).get("track", [])
+    return [
+        {
+            "artist": t.get("artist", {}).get("name", ""),
+            "title": t.get("name", ""),
+            "match": float(t.get("match", 0)),
+        }
+        for t in similar if t.get("name") and t.get("artist", {}).get("name")
+    ]
+
+def lastfm_search_track(query, limit=10):
+    """Search tracks on Last.fm."""
+    data = lastfm_request("track.search", track=query, limit=limit)
+    if not data:
+        return []
+    tracks = data.get("results", {}).get("trackmatches", {}).get("track", [])
+    if not isinstance(tracks, list):
+        tracks = [tracks]
+    return [
+        {
+            "artist": t.get("artist", ""),
+            "title": t.get("name", ""),
+            "listeners": int(t.get("listeners", 0)),
+        }
+        for t in tracks if t.get("name") and t.get("artist")
+    ]
+
+def lastfm_search_artist(query, limit=10):
+    """Search artists on Last.fm."""
+    data = lastfm_request("artist.search", artist=query, limit=limit)
+    if not data:
+        return []
+    artists = data.get("results", {}).get("artistmatches", {}).get("artist", [])
+    if not isinstance(artists, list):
+        artists = [artists]
+    return [a.get("name", "").strip() for a in artists if a.get("name")]
+
+def lastfm_get_artist_top_tracks(artist_name, limit=20):
+    """Get top tracks for artist from Last.fm."""
+    data = lastfm_request("artist.gettoptracks", artist=artist_name, limit=limit)
+    if not data:
+        return []
+    tracks = data.get("toptracks", {}).get("track", [])
+    if not isinstance(tracks, list):
+        tracks = [tracks]
+    return [
+        {
+            "artist": artist_name,
+            "title": t.get("name", ""),
+            "playcount": int(t.get("playcount", 0)),
+        }
+        for t in tracks if t.get("name")
+    ]
+
+def lastfm_get_track_info(artist, track):
+    """Get track info from Last.fm."""
+    data = lastfm_request("track.getInfo", artist=artist, track=track)
+    if not data:
+        return None
+    track_data = data.get("track", {})
+    return {
+        "artist": track_data.get("artist", {}).get("name", ""),
+        "title": track_data.get("name", ""),
+        "listeners": int(track_data.get("listeners", 0)),
+        "playcount": int(track_data.get("playcount", 0)),
+        "tags": [t.get("name", "") for t in track_data.get("toptags", {}).get("tag", [])],
+        "similar": lastfm_get_similar_tracks(artist, track, limit=5),
+    }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BANDCAMP — ПОШУК ЧЕРЕЗ ВНУТРІШНІЙ API
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def bandcamp_search(query, limit=10):
+    """Search Bandcamp via internal API."""
+    try:
+        # Bandcamp internal search API
+        url = "https://bandcamp.com/api/bcsearch/1/autocomplete"
+        params = {
+            "search_text": query,
+            "searchfilter": "t",  # t = tracks, a = albums, b = artists
+            "full_page": "true",
+            "fan_id": "1",
+        }
+        headers = {
+            "User-Agent": f"MusicLSP/3.2 ({AUTHOR})",
+            "Accept": "application/json",
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+
+        results = []
+        for item in data.get("auto", {}).get("results", [])[:limit]:
+            if item.get("type") == "t":  # track
+                results.append({
+                    "title": f"{item.get('band_name', 'Unknown')} - {item.get('name', 'Unknown')}",
+                    "url": item.get("url", ""),
+                    "artist": item.get("band_name", ""),
+                    "track": item.get("name", ""),
+                    "source": "bandcamp",
+                    "art_id": item.get("art_id", ""),
+                })
+            elif item.get("type") == "a":  # album
+                results.append({
+                    "title": f"{item.get('band_name', 'Unknown')} - {item.get('name', 'Unknown')} (Album)",
+                    "url": item.get("url", ""),
+                    "artist": item.get("band_name", ""),
+                    "album": item.get("name", ""),
+                    "source": "bandcamp",
+                    "is_album": True,
+                    "art_id": item.get("art_id", ""),
+                })
+
+        logger.info(f"Bandcamp search: {len(results)} results for '{query}'")
+        return results
+    except Exception as e:
+        logger.warning(f"Bandcamp search failed: {e}")
+        return []
+
+def bandcamp_get_track_info(track_url):
+    """Get track info from Bandcamp track URL."""
+    try:
+        headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
+        resp = requests.get(track_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+
+        # Extract track info from embedded JSON
+        track_match = re.search(r'"trackinfo":\s*(\[.*?\])', html, re.DOTALL)
+        if track_match:
+            try:
+                trackinfo = json.loads(track_match.group(1))
+                if trackinfo:
+                    t = trackinfo[0]
+                    return {
+                        "title": t.get("title", "Unknown"),
+                        "url": track_url,
+                        "file_url": t.get("file", {}).get("mp3-128", ""),
+                        "duration": fmt_dur(t.get("duration", 0)),
+                        "duration_sec": t.get("duration", 0),
+                        "source": "bandcamp",
+                    }
+            except Exception:
+                pass
+        return None
+    except Exception as e:
+        logger.error(f"Bandcamp track info failed: {e}")
+        return None
+
+def bandcamp_get_album_tracks(album_url):
+    """Get tracks from Bandcamp album page."""
+    try:
+        headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
+        resp = requests.get(album_url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        html = resp.text
+
+        tracks = []
+        track_data_pattern = re.compile(r'"trackinfo":\s*(\[.*?\])', re.DOTALL)
+        match = track_data_pattern.search(html)
+        if match:
+            try:
+                trackinfo = json.loads(match.group(1))
+                for t in trackinfo:
+                    tracks.append({
+                        "name": t.get("title", "Unknown"),
+                        "duration": fmt_dur(t.get("duration", 0)),
+                        "duration_sec": t.get("duration", 0),
+                        "file_url": t.get("file", {}).get("mp3-128", ""),
+                        "track_number": t.get("track_num", 0),
+                    })
+            except Exception:
+                pass
+
+        title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+        album_title = title_match.group(1) if title_match else "Unknown Album"
+
+        artist_match = re.search(r'"byArtist":\s*\{[^}]*"name":\s*"([^"]+)"', html)
+        if not artist_match:
+            artist_match = re.search(r'<meta name="title" content="([^"]+)"', html)
+        artist_name = artist_match.group(1) if artist_match else "Unknown Artist"
+
+        image_match = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+        image_url = image_match.group(1) if image_match else ""
+
+        return {
+            "name": album_title,
+            "artist": artist_name,
+            "tracks": tracks,
+            "total_tracks": len(tracks),
+            "image_url": image_url,
+            "url": album_url,
+            "source": "bandcamp",
+        }
+    except Exception as e:
+        logger.error(f"Bandcamp album parse failed: {e}")
+        return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DEEZER API — ПОШУК ТА ІНФОРМАЦІЯ (без авторизації)
@@ -414,7 +632,7 @@ MUSIC_GENRES = {
     },
     "fr": {
         "pop": "🎤 Pop", "rock": "🎸 Rock", "hiphop": "🎧 Hip-Hop",
-        "electronic": "🎹 Électro", "jazz": "🎷 Jazz", "classical": "🎻 Classique",
+        "electronic": "🎹 Électро", "jazz": "🎷 Jazz", "classical": "🎻 Classique",
         "metal": "🤘 Metal", "rnb": "💃 R&B", "country": "🤠 Country",
         "folk": "🪕 Folk", "blues": "🔵 Blues", "reggae": "🌴 Reggae",
         "latin": "💃 Latine", "kpop": "🇰🇷 K-pop", "indie": "🎨 Indie",
@@ -538,10 +756,8 @@ class DBWrapper:
     def fetchone(self):
         """Fetch one row."""
         if self.is_postgres:
-            # This should be called on cursor, not connection
             raise RuntimeError("Use cursor.fetchone() for PostgreSQL")
         else:
-            # SQLite connection doesn't have fetchone
             raise RuntimeError("This shouldn't be called directly")
 
     def fetchall(self):
@@ -653,7 +869,7 @@ def init_postgres():
                 )
             """)
             conn.commit()
-            logger.info("✅ PostgreSQL tables initialized")
+            logger.info("PostgreSQL tables initialized")
     except Exception as e:
         logger.error(f"PostgreSQL init error: {e}")
         raise
@@ -750,7 +966,6 @@ def get_user(uid):
             c.execute("SELECT * FROM users WHERE id = %s", (uid,))
             row = c.fetchone()
             if row:
-                # Convert tuple to dict-like object
                 cols = [desc[0] for desc in c.description]
                 return dict(zip(cols, row))
             return None
@@ -761,7 +976,6 @@ def create_user(uid, username):
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with db() as c:
         if USE_POSTGRES:
-            # PostgreSQL - use ON CONFLICT
             c.execute(
                 "INSERT INTO users (id, username, joined) VALUES (%s, %s, %s) ON CONFLICT (id) DO NOTHING",
                 (uid, username, now)
@@ -1108,7 +1322,6 @@ def update_radio_idx(rid, idx):
             )
 
 
-
 async def handle_admin_input(update, ctx, state, text):
     """Handle admin panel inputs."""
     uid = update.effective_user.id
@@ -1176,15 +1389,9 @@ async def handle_admin_input(update, ctx, state, text):
                 await update.message.reply_text("❌ User not found")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  YT-DLP — РОБОЧІ КЛІЄНТИ БЕЗ COOKIES
+#  YT-DLP — ПОШУК ТА ЗАВАНТАЖЕННЯ
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Оновлені робочі клієнти (2026)
-# Music Sources: Spotify + SoundCloud (YouTube removed - too many issues)
-# SoundCloud works without authentication
-# Spotify requires API credentials
-
-# Базові опції yt-dlp — БЕЗ cookies
 BASE_YTDL_OPTS = {
     "quiet": True,
     "no_warnings": True,
@@ -1195,13 +1402,7 @@ BASE_YTDL_OPTS = {
     "fragment_retries": 3,
     "file_access_retries": 3,
     "extractor_retries": 3,
-    # Мінімальний user-agent — yt-dlp сам додає потрібні headers
-    # НЕ додаємо referer чи cookies — це викликає блокування
 }
-
-
-
-# ─── Пошук YouTube/SoundCloud ─────────────────────────────────────────────────
 
 
 def sc_search(query, limit=15):
@@ -1235,46 +1436,97 @@ def sc_search(query, limit=15):
     logger.info(f"SoundCloud search: {len(tracks)} results for '{query}'")
     return tracks
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ПОКРАЩЕНИЙ ПОШУК — КАСКАДНИЙ (SC → Deezer → Spotify → Bandcamp → Last.fm)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def search_all(query, limit=10):
-    """Search SoundCloud → Deezer → Spotify. Return unified results."""
+    """Search ALL sources. Return unified results with deduplication."""
     results = []
     seen_urls = set()
     seen_titles = set()
 
+    def add_result(track, source_icon):
+        key = track.get("url", "")
+        title_key = track.get("title", "").lower().strip()
+        if not title_key:
+            return False
+        if key and key in seen_urls:
+            return False
+        if title_key in seen_titles:
+            return False
+        if key:
+            seen_urls.add(key)
+        seen_titles.add(title_key)
+        track["source_icon"] = source_icon
+        results.append(track)
+        return True
+
     # 1. SoundCloud (основне джерело)
-    sc = sc_search(query, limit)
-    for track in sc:
-        key = track["url"]
-        if key not in seen_urls:
-            seen_urls.add(key)
-            seen_titles.add(track["title"].lower().strip())
-            results.append(track)
+    try:
+        sc = sc_search(query, limit)
+        for track in sc:
+            add_result(track, "🎵")
+    except Exception as e:
+        logger.warning(f"SoundCloud search error: {e}")
 
-    # 2. Deezer (додаткове джерело)
-    dz = dz_search_tracks(query, limit)
-    for track in dz:
-        key = track["url"]
-        title_key = track["title"].lower().strip()
-        if key and key not in seen_urls and title_key not in seen_titles:
-            seen_urls.add(key)
-            seen_titles.add(title_key)
-            results.append(track)
+    # 2. Deezer
+    try:
+        dz = dz_search_tracks(query, limit)
+        for track in dz:
+            add_result(track, "🟣")
+    except Exception as e:
+        logger.warning(f"Deezer search error: {e}")
 
-    # 3. Spotify (якщо є credentials)
+    # 3. Spotify
     if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         try:
             spotify_tracks = search_spotify_tracks(query, limit=limit)
             for track in spotify_tracks:
-                key = track["url"]
-                title_key = track["title"].lower().strip()
-                if key and key not in seen_urls and title_key not in seen_titles:
-                    seen_urls.add(key)
-                    seen_titles.add(title_key)
-                    results.append(track)
+                add_result(track, "🟢")
         except Exception as e:
-            logger.warning(f"Spotify search failed: {e}")
+            logger.warning(f"Spotify search error: {e}")
 
-    logger.info(f"Total search results for '{query}': {len(results)} (SC:{len(sc)}, DZ:{len(dz)})")
+    # 4. Bandcamp (інді/андерграунд)
+    try:
+        bc = bandcamp_search(query, limit=limit)
+        for track in bc:
+            if not track.get("is_album"):
+                track["duration"] = "—"
+                track["channel"] = track.get("artist", "Bandcamp")
+                add_result(track, "🟠")
+    except Exception as e:
+        logger.warning(f"Bandcamp search error: {e}")
+
+    # 5. Last.fm — пошук треків, потім шукаємо на SoundCloud
+    try:
+        lf = lastfm_search_track(query, limit=limit)
+        for track in lf:
+            title_key = f"{track['artist']} - {track['title']}".lower().strip()
+            if title_key not in seen_titles:
+                # Спробуємо знайти на SoundCloud
+                sc_query = f"{track['artist']} {track['title']}"
+                sc_results = sc_search(sc_query, limit=3)
+                if sc_results:
+                    for sr in sc_results:
+                        if add_result(sr, "🎵"):
+                            break
+                else:
+                    # Додаємо placeholder з Last.fm
+                    add_result({
+                        "title": f"{track['artist']} - {track['title']}",
+                        "url": "",
+                        "id": "",
+                        "duration": "—",
+                        "channel": track["artist"],
+                        "source": "lastfm",
+                        "listeners": track.get("listeners", 0),
+                    }, "🔴")
+    except Exception as e:
+        logger.warning(f"Last.fm search error: {e}")
+
+    logger.info(f"Total search results for '{query}': {len(results)}")
     return results[:limit + 5]
 
 
@@ -1356,7 +1608,7 @@ async def search_by_genre(msg, genre_key, uid, ctx):
 
     kb = []
     for i, t in enumerate(tracks[:10]):
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
+        icon = t.get("source_icon", "🎵")
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {t['title'][:40]} ({t['duration']})",
@@ -1372,6 +1624,7 @@ async def search_by_genre(msg, genre_key, uid, ctx):
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 
 def search_spotify_tracks(query, limit=5):
     """Search tracks in Spotify."""
@@ -1405,8 +1658,9 @@ def search_spotify_tracks(query, limit=5):
         logger.error(f"Spotify track search error: {e}")
         return []
 
+
 def artist_songs(artist, limit=50):
-    """Search artist songs on SoundCloud + Deezer."""
+    """Search artist songs on SoundCloud + Deezer + Last.fm + Bandcamp."""
     results = []
     seen = set()
 
@@ -1424,10 +1678,42 @@ def artist_songs(artist, limit=50):
             seen.add(t["url"])
             results.append(t)
 
+    # Last.fm top tracks
+    try:
+        lf = lastfm_get_artist_top_tracks(artist, limit=limit)
+        for t in lf:
+            sc_query = f"{t['artist']} {t['title']}"
+            sc_results = sc_search(sc_query, limit=3)
+            if sc_results:
+                for sr in sc_results:
+                    if sr["url"] not in seen:
+                        seen.add(sr["url"])
+                        results.append(sr)
+                        break
+    except Exception as e:
+        logger.warning(f"Last.fm artist top failed: {e}")
+
+    # Bandcamp
+    try:
+        bc = bandcamp_search(artist, limit=limit)
+        for t in bc:
+            if not t.get("is_album") and t["url"] not in seen:
+                seen.add(t["url"])
+                t["duration"] = "—"
+                t["channel"] = t.get("artist", "Bandcamp")
+                results.append(t)
+    except Exception as e:
+        logger.warning(f"Bandcamp artist search failed: {e}")
+
     return results[:limit]
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ПОКРАЩЕНИЙ ПОШУК ТРЕКА ДЛЯ ЗАВАНТАЖЕННЯ — КАСКАДНИЙ
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def find_track_for_download(track_name, artist_name):
-    """Find track URL for download. Chain: SoundCloud → Deezer → Spotify."""
+    """Find track URL for download. Chain: SoundCloud → Deezer → Spotify → Bandcamp → Last.fm (альтернативи)."""
 
     queries = [
         f"{artist_name} {track_name}",
@@ -1436,8 +1722,8 @@ def find_track_for_download(track_name, artist_name):
         artist_name,
     ]
 
+    # 1. SoundCloud
     for query in queries:
-        # 1. SoundCloud
         try:
             result = sc_search(query, limit=5)
             if result:
@@ -1457,7 +1743,8 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"SC search failed for '{query}': {e}")
 
-        # 2. Deezer
+    # 2. Deezer
+    for query in queries:
         try:
             dz = dz_search_tracks(query, limit=5)
             if dz:
@@ -1477,8 +1764,9 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"Deezer search failed for '{query}': {e}")
 
-        # 3. Spotify
-        if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    # 3. Spotify
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        for query in queries:
             try:
                 spotify = search_spotify_tracks(query, limit=5)
                 if spotify:
@@ -1498,8 +1786,65 @@ def find_track_for_download(track_name, artist_name):
             except Exception as e:
                 logger.warning(f"Spotify search failed for '{query}': {e}")
 
+    # 4. Bandcamp
+    for query in queries:
+        try:
+            bc = bandcamp_search(query, limit=5)
+            if bc:
+                for b in bc:
+                    if not b.get("is_album"):
+                        title_lower = b["title"].lower()
+                        if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                            return {
+                                "title": b["title"],
+                                "url": b["url"],
+                                "source": "bandcamp",
+                            }
+                # Перший трек з результатів
+                for b in bc:
+                    if not b.get("is_album"):
+                        return {
+                            "title": b["title"],
+                            "url": b["url"],
+                            "source": "bandcamp",
+                        }
+        except Exception as e:
+            logger.warning(f"Bandcamp search failed for '{query}': {e}")
+
+    # 5. Last.fm — шукаємо схожі треки або альтернативні назви
+    try:
+        lf_similar = lastfm_get_similar_tracks(artist_name, track_name, limit=10)
+        for sim in lf_similar:
+            sc_query = f"{sim['artist']} {sim['title']}"
+            sc_results = sc_search(sc_query, limit=3)
+            if sc_results:
+                return {
+                    "title": f"{sim['artist']} - {sim['title']}",
+                    "url": sc_results[0]["url"],
+                    "source": "soundcloud",
+                    "note": f"Схожий трек (match: {sim.get('match', 0):.2f})",
+                }
+    except Exception as e:
+        logger.warning(f"Last.fm similar tracks failed: {e}")
+
+    # 6. Last.fm — пошук трека
+    try:
+        lf_search = lastfm_search_track(f"{artist_name} {track_name}", limit=5)
+        for lf_track in lf_search:
+            sc_query = f"{lf_track['artist']} {lf_track['title']}"
+            sc_results = sc_search(sc_query, limit=3)
+            if sc_results:
+                return {
+                    "title": f"{lf_track['artist']} - {lf_track['title']}",
+                    "url": sc_results[0]["url"],
+                    "source": "soundcloud",
+                }
+    except Exception as e:
+        logger.warning(f"Last.fm track search failed: {e}")
+
     logger.error(f"Could not find track: {artist_name} - {track_name}")
     return None
+
 
 # ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
 def extract_spotify_album_id(text):
@@ -1606,7 +1951,7 @@ def mb_search_album(query, limit=10):
     import urllib.parse
     encoded = urllib.parse.quote(query)
     url = f"https://musicbrainz.org/ws/2/release/?query=release:{encoded}&fmt=json&limit={limit}"
-    headers = {"User-Agent": f"MusicLSP/3.0 ({AUTHOR})"}
+    headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -1620,7 +1965,7 @@ def mb_search_album(query, limit=10):
 
 def mb_get_full_album_info(mbid):
     url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artists+labels&fmt=json"
-    headers = {"User-Agent": f"MusicLSP/3.0 ({AUTHOR})"}
+    headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -1756,9 +2101,21 @@ async def async_find_track(track_name, artist_name):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, find_track_for_download, track_name, artist_name)
 
-# ─── Завантаження MP3 — БЕЗ COOKIES ─────────────────────────────────────────
+async def async_bandcamp_search(query, limit=10):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, bandcamp_search, query, limit)
+
+async def async_lastfm_similar_artists(artist_name, limit=10):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lastfm_get_similar_artists, artist_name, limit)
+
+async def async_lastfm_similar_tracks(artist, track, limit=10):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lastfm_get_similar_tracks, artist, track, limit)
+
+# ─── Завантаження MP3 ─────────────────────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    """Download MP3 from SoundCloud, Deezer or Spotify."""
+    """Download MP3 from SoundCloud, Deezer, Spotify, Bandcamp or any source."""
 
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
@@ -1799,8 +2156,8 @@ def download_mp3(url, out_dir, quality="192"):
                 return str(mp3_files[0])
             # Конвертація якщо не mp3
             for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                                    files = list(Path(out_dir).glob(ext))
-            if files:
+                files = list(Path(out_dir).glob(ext))
+                if files:
                     input_file = str(files[0])
                     output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
                     try:
@@ -1852,7 +2209,7 @@ def _alt_download(url, out_dir, quality="192"):
         logger.warning(f"Alternative download failed: {e}")
     return None
 
-# ─── ZIP-архів для альбому — на диск, не в пам'ять ────────────────────────────
+# ─── ZIP-архів для альбому ───────────────────────────────────────────────────
 async def create_album_zip(tracks, quality="192", tmp_dir=None):
     if tmp_dir is None:
         tmp_dir = tempfile.mkdtemp()
@@ -1878,7 +2235,6 @@ async def create_album_zip(tracks, quality="192", tmp_dir=None):
     if downloaded == 0:
         return None
     return zip_path
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TELEGRAM HANDLERS
@@ -2027,10 +2383,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:albums":
         set_state(uid, "album_search")
         prompts = {
-            "uk": "💿 Введи назву альбому:\n\n<i>Приклади:</i>\n* <code>Yanix SS 20</code>",
-            "ru": "💿 Введи название альбома:\n\n<i>Примеры:</i>\n* <code>Yanix SS 20</code>",
-            "en": "💿 Enter album name:\n\n<i>Examples:</i>\n* <code>Yanix SS 20</code>",
-            "fr": "💿 Entre le nom de l'album:\n\n<i>Exemples:</i>\n* <code>Yanix SS 20</code>",
+            "uk": "💿 Введи назву альбому:\n\n<i>Приклади:</i>\n* <code>Yanix SS 20</code>\n* <code>Скучаю но еще работаю</code>",
+            "ru": "💿 Введи название альбома:\n\n<i>Примеры:</i>\n* <code>Yanix SS 20</code>\n* <code>Скучаю но еще работаю</code>",
+            "en": "💿 Enter album name:\n\n<i>Examples:</i>\n* <code>Yanix SS 20</code>\n* <code>Скучаю но еще работаю</code>",
+            "fr": "💿 Entre le nom de l'album:\n\n<i>Exemples:</i>\n* <code>Yanix SS 20</code>\n* <code>Скучаю но еще работаю</code>",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2172,8 +2528,6 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-
-
     # Statistics (Premium)
     if data == "m:stats":
         if not is_premium(uid):
@@ -2183,7 +2537,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Lyrics (Premium)
-    
+    if data == "m:lyrics":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
         set_state(uid, "lyrics_input")
         prompts = {
             "uk": "🎤 Введи назву пісні та артиста для тексту:",
@@ -2495,6 +2852,37 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Bandcamp album
+    if data.startswith("bc_album|"):
+        album_url = data.split("|", 1)[1]
+        await show_bandcamp_album(q.message, album_url, uid, ctx)
+        return
+
+    if data.startswith("bc_track|"):
+        parts = data.split("|", 2)
+        album_ck = parts[1]
+        track_idx = int(parts[2])
+        album_data = ctx.bot_data.get("bandcamp_album_cache", {}).get(album_ck)
+        if not album_data or track_idx >= len(album_data.get("tracks", [])):
+            await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
+            return
+        track = album_data["tracks"][track_idx]
+        await do_download(
+            q.message, album_data["url"], track["name"], album_data["artist"], uid, ctx
+        )
+        return
+
+    if data == "bc_albumzip":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        album_ck = ctx.bot_data.get("last_bandcamp_album_ck", "")
+        album_data = ctx.bot_data.get("bandcamp_album_cache", {}).get(album_ck)
+        if not album_data:
+            await q.message.reply_text("❌ Дані альбому застаріли.")
+            return
+        await do_download_bandcamp_album_zip(q.message, album_data, uid, ctx)
+        return
 
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2535,7 +2923,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Album search
     if state == "album_search":
         set_state(uid, "")
-        await do_mb_album_search(update, text, uid, ctx)
+        await do_album_search(update, text, uid, ctx)
         return
 
     # ZIP album search
@@ -2615,7 +3003,6 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await do_search_paged(update, text, uid, ctx, page=0, edit=False)
 
 
-
 # ─── Пошук з пагінацією ───────────────────────────────────────────────────────
 async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     l = get_lang(uid)
@@ -2639,7 +3026,7 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     kb = []
     for i, t in enumerate(tracks):
         global_idx = start + i
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
+        icon = t.get("source_icon", "🎵")
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {t['title'][:42]} ({t['duration']})",
@@ -2673,13 +3060,80 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     else:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── MusicBrainz: Пошук альбомів ──────────────────────────────────────────────
-async def do_mb_album_search(update, query, uid, ctx):
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ПОКРАЩЕНИЙ ПОШУК АЛЬБОМІВ — Deezer + Spotify + MusicBrainz + Bandcamp
+# ═══════════════════════════════════════════════════════════════════════════════
+async def do_album_search(update, query, uid, ctx):
     msg = await update.message.reply_text(
-        f"💿 Шукаю в MusicBrainz: <b>{query}</b>…", parse_mode="HTML"
+        f"💿 Шукаю альбоми: <b>{query}</b>…\n<i>Deezer → Spotify → MusicBrainz → Bandcamp</i>",
+        parse_mode="HTML"
     )
-    releases = await async_mb_search(query, limit=10)
-    if not releases:
+
+    # 1. Deezer albums
+    dz_albums = dz_search_albums(query, limit=5)
+
+    # 2. Spotify albums
+    spotify_results = []
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        try:
+            spotify_results = await async_search_spotify(query, limit=5)
+        except Exception as e:
+            logger.warning(f"Spotify album search failed: {e}")
+
+    # 3. MusicBrainz
+    mb_results = await async_mb_search(query, limit=5)
+
+    # 4. Bandcamp albums
+    bc_results = []
+    try:
+        bc = bandcamp_search(query, limit=5)
+        bc_results = [b for b in bc if b.get("is_album")]
+    except Exception as e:
+        logger.warning(f"Bandcamp album search failed: {e}")
+
+    kb = []
+
+    # Deezer albums
+    for album in dz_albums[:3]:
+        kb.append([
+            InlineKeyboardButton(
+                f"🟣 Deezer: {album['name'][:25]} — {album['artist'][:15]} ({album['year']})",
+                callback_data=f"dz_album|{album['id']}"
+            )
+        ])
+
+    # Spotify albums
+    for album in spotify_results[:3]:
+        kb.append([
+            InlineKeyboardButton(
+                f"🟢 Spotify: {album['name'][:25]} — {album['artist'][:15]} ({album['year']})",
+                callback_data=f"sp_album|{album['id']}"
+            )
+        ])
+
+    # MusicBrainz albums
+    for rel in mb_results[:3]:
+        info = mb_format_album(rel)
+        kb.append([
+            InlineKeyboardButton(
+                f"🔴 MusicBrainz: {info['name'][:25]} — {info['artist'][:15]} ({info['year']})",
+                callback_data=f"mb_album|{info['mbid']}"
+            )
+        ])
+
+    # Bandcamp albums
+    for album in bc_results[:3]:
+        kb.append([
+            InlineKeyboardButton(
+                f"🟠 Bandcamp: {album['album'][:25]} — {album['artist'][:15]}",
+                callback_data=f"bc_album|{album['url']}"
+            )
+        ])
+
+    kb.append([back_btn(uid)])
+
+    if not kb[:-1]:
         await msg.edit_text(
             "😔 Альбоми не знайдено.\n\n"
             "💡 Спробуй:\n"
@@ -2688,57 +3142,65 @@ async def do_mb_album_search(update, query, uid, ctx):
             parse_mode="HTML"
         )
         return
-    kb = []
-    for rel in releases[:8]:
-        info = mb_format_album(rel)
-        name = info["name"][:35]
-        artist = info["artist"][:25]
-        year = info["year"]
-        tracks_count = info["total_tracks"]
-        kb.append([
-            InlineKeyboardButton(
-                f"💿 {name} — {artist} ({year}, {tracks_count} треків)",
-                callback_data=f"mb_album|{info['mbid']}"
-            )
-        ])
-    kb.append([back_btn(uid)])
+
+    sources_text = []
+    if dz_albums:
+        sources_text.append(f"🟣 Deezer: {len(dz_albums)}")
+    if spotify_results:
+        sources_text.append(f"🟢 Spotify: {len(spotify_results)}")
+    if mb_results:
+        sources_text.append(f"🔴 MusicBrainz: {len(mb_results)}")
+    if bc_results:
+        sources_text.append(f"🟠 Bandcamp: {len(bc_results)}")
+
+    text = (
+        f"🎵 <b>Результати пошуку альбомів:</b> «{query}»\n"
+        f"<i>{' | '.join(sources_text)}</i>\n\n"
+        f"Обери альбом 👇"
+    )
+
     await msg.edit_text(
-        f"🎵 <b>Результати MusicBrainz:</b> «{query}»\n\nОбери альбом 👇",
+        text,
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
 
-# ─── MusicBrainz: Показати альбом ─────────────────────────────────────────────
 
-async def show_spotify_album(msg, album_id, uid, ctx):
-    """Show Spotify album info."""
-    l = get_lang(uid)
+# ─── Deezer альбом показати ─────────────────────────────────────────────────
+async def show_dz_album(msg, album_id, uid, ctx):
     status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
-
-    album = await async_spotify_album_info(album_id)
+    album = dz_get_album_tracks(album_id)
     if not album:
         await status.edit_text("❌ Не вдалося отримати дані.")
         return
 
     ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
-    ctx.bot_data.setdefault("spotify_album_cache", {})[ck] = album
-    ctx.bot_data["last_spotify_album_ck"] = ck
+    ctx.bot_data.setdefault("dz_album_cache", {})[ck] = album
+    ctx.bot_data["last_dz_album_ck"] = ck
 
-    text = f"📀 <b>{album['name']}</b>\n\n🎤 {album['artist']}\n📅 {album['year']}\n🎵 {album['total_tracks']} треків"
+    text = (
+        f"📀 <b>{album['name']}</b>\n\n"
+        f"🎤 {album['artist']}\n"
+        f"📅 {album['year']}\n"
+        f"🎵 {album['total_tracks']} треків\n"
+        f"⏱ {album['total_duration']}"
+    )
 
     kb = []
     for i, track in enumerate(album["tracks"][:15]):
         kb.append([InlineKeyboardButton(
             f"▶️ {i+1}. {track['name'][:35]}",
-            callback_data=f"sp_track|{ck}|{i}"
+            callback_data=f"dz_track|{ck}|{i}"
         )])
 
-    kb.append([InlineKeyboardButton("📦 ZIP", callback_data="sp_albumzip")])
+    kb.append([InlineKeyboardButton("📦 ZIP", callback_data="dz_albumzip")])
     kb.append([back_btn(uid)])
 
     await status.delete()
     await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
+
+# ─── MusicBrainz: Показати альбом ─────────────────────────────────────────────
 async def show_mb_album(msg, mbid, uid, ctx):
     status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
     album = await async_mb_full_info(mbid)
@@ -2804,7 +3266,83 @@ async def show_mb_album(msg, mbid, uid, ctx):
 
     await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── MusicBrainz: Завантажити ZIP ─────────────────────────────────────────────
+
+# ─── Bandcamp: Показати альбом ────────────────────────────────────────────────
+async def show_bandcamp_album(msg, album_url, uid, ctx):
+    status = await msg.reply_text("💿 Завантажую інформацію з Bandcamp…", parse_mode="HTML")
+    album = bandcamp_get_album_tracks(album_url)
+    if not album:
+        await status.edit_text("❌ Не вдалося отримати дані з Bandcamp.")
+        return
+
+    ck = hashlib.md5(f"{uid}_{album_url}".encode()).hexdigest()[:8]
+    ctx.bot_data.setdefault("bandcamp_album_cache", {})[ck] = album
+    ctx.bot_data["last_bandcamp_album_ck"] = ck
+
+    text = (
+        f"📀 <b>{album['name']}</b>\n\n"
+        f"🎤 {album['artist']}\n"
+        f"🎵 {album['total_tracks']} треків\n"
+        f"🔗 Bandcamp"
+    )
+
+    kb = []
+    for i, track in enumerate(album["tracks"][:15]):
+        kb.append([InlineKeyboardButton(
+            f"▶️ {i+1}. {track['name'][:35]}",
+            callback_data=f"bc_track|{ck}|{i}"
+        )])
+
+    kb.append([InlineKeyboardButton("📦 ZIP", callback_data="bc_albumzip")])
+    kb.append([back_btn(uid)])
+
+    await status.delete()
+
+    image_url = album.get("image_url", "")
+    if image_url:
+        try:
+            await msg.reply_photo(
+                photo=image_url,
+                caption=text[:1024],
+                reply_markup=InlineKeyboardMarkup(kb),
+                parse_mode="HTML"
+            )
+            return
+        except Exception:
+            pass
+
+    await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+# ─── Spotify: Показати альбом ───────────────────────────────────────────────
+async def show_spotify_album(msg, album_id, uid, ctx):
+    """Show Spotify album info."""
+    l = get_lang(uid)
+    status = await msg.reply_text("💿 Завантажую інформацію…", parse_mode="HTML")
+
+    album = await async_spotify_album_info(album_id)
+    if not album:
+        await status.edit_text("❌ Не вдалося отримати дані.")
+        return
+
+    ck = hashlib.md5(f"{uid}_{album_id}".encode()).hexdigest()[:8]
+    ctx.bot_data.setdefault("spotify_album_cache", {})[ck] = album
+    ctx.bot_data["last_spotify_album_ck"] = ck
+
+    text = f"📀 <b>{album['name']}</b>\n\n🎤 {album['artist']}\n📅 {album['year']}\n🎵 {album['total_tracks']} треків"
+
+    kb = []
+    for i, track in enumerate(album["tracks"][:15]):
+        kb.append([InlineKeyboardButton(
+            f"▶️ {i+1}. {track['name'][:35]}",
+            callback_data=f"sp_track|{ck}|{i}"
+        )])
+
+    kb.append([InlineKeyboardButton("📦 ZIP", callback_data="sp_albumzip")])
+    kb.append([back_btn(uid)])
+
+    await status.delete()
+    await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 
 # ─── Основна функція завантаження ────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
@@ -2867,6 +3405,8 @@ async def do_download(msg, url, title, artist, uid, ctx):
             logger.error(f"Download error: {e}")
             await status.edit_text(t["err"])
 
+
+# ─── ZIP завантаження для альбомів ────────────────────────────────────────────
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     """Download Spotify album as ZIP."""
     l = get_lang(uid)
@@ -2915,11 +3455,12 @@ async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     await status.delete()
     os.unlink(zip_path)
 
+
 async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     l = get_lang(uid)
     status = await msg.reply_text(
         f"⬇️ Завантажую альбом: <b>{album_data['name']}</b>\n"
-        f"<i>Шукаю треки: SoundCloud → Spotify…</i>",
+        f"<i>Шукаю треки: SoundCloud → Spotify → Bandcamp…</i>",
         parse_mode="HTML"
     )
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
@@ -2994,6 +3535,64 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     await status.delete()
     os.unlink(zip_path)
 
+
+async def do_download_bandcamp_album_zip(msg, album_data, uid, ctx):
+    """Download Bandcamp album as ZIP."""
+    l = get_lang(uid)
+    status = await msg.reply_text(
+        f"⬇️ Завантажую альбом з Bandcamp: <b>{album_data['name']}</b>…",
+        parse_mode="HTML"
+    )
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    tracks_with_url = []
+
+    for i, track in enumerate(album_data["tracks"]):
+        if track.get("file_url"):
+            tracks_with_url.append({
+                "title": f"{album_data['artist']} — {track['name']}",
+                "url": track["file_url"],
+            })
+        else:
+            # Спробуємо знайти через пошук
+            result = await async_find_track(track["name"], album_data["artist"])
+            if result:
+                tracks_with_url.append({
+                    "title": f"{album_data['artist']} — {track['name']}",
+                    "url": result["url"],
+                })
+        await asyncio.sleep(0.2)
+
+    if not tracks_with_url:
+        await status.edit_text("😔 Не знайдено жодного трека.")
+        return
+
+    await status.edit_text(f"⬇️ Завантажую {len(tracks_with_url)} треків…")
+
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+
+    if not zip_path:
+        await status.edit_text("❌ Помилка створення архіву.")
+        return
+
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
+    if size_mb > 2000:
+        await status.edit_text(f"❌ Архів завеликий ({size_mb:.1f} МБ).")
+        return
+
+    await status.edit_text("📤 Відправляю ZIP…")
+    safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
+
+    await msg.reply_document(
+        document=open(zip_path, 'rb'),
+        filename=f"{safe_name}.zip",
+        caption=f"💿 <b>{album_data['name']}</b>\n🎤 {album_data['artist']}\n📦 {len(tracks_with_url)} треків\n🔗 Bandcamp",
+        parse_mode="HTML"
+    )
+    await status.delete()
+    os.unlink(zip_path)
+
+
 # ─── ZIP альбом пошук (для Premium меню) ──────────────────────────────────────
 async def do_zip_album_search(update, query, uid, ctx):
     msg = await update.message.reply_text(
@@ -3001,6 +3600,14 @@ async def do_zip_album_search(update, query, uid, ctx):
     )
     spotify_results = await async_search_spotify(query, limit=5)
     mb_results = await async_mb_search(query, limit=5)
+
+    # Bandcamp albums
+    bc_results = []
+    try:
+        bc = bandcamp_search(query, limit=5)
+        bc_results = [b for b in bc if b.get("is_album")]
+    except Exception:
+        pass
 
     kb = []
     for album in spotify_results[:3]:
@@ -3018,6 +3625,13 @@ async def do_zip_album_search(update, query, uid, ctx):
                 callback_data=f"mb_album|{info['mbid']}"
             )
         ])
+    for album in bc_results[:3]:
+        kb.append([
+            InlineKeyboardButton(
+                f"🟠 Bandcamp: {album['album'][:30]} — {album['artist'][:20]}",
+                callback_data=f"bc_album|{album['url']}"
+            )
+        ])
     kb.append([back_btn(uid)])
 
     if not kb[:-1]:
@@ -3027,10 +3641,12 @@ async def do_zip_album_search(update, query, uid, ctx):
     await msg.edit_text(
         "📦 <b>Обери альбом для ZIP:</b>\n\n"
         "🟢 — Spotify (краща якість метаданих)\n"
-        "🔴 — MusicBrainz (більше незалежної музики)",
+        "🔴 — MusicBrainz (більше незалежної музики)\n"
+        "🟠 — Bandcamp (інді/андерграунд)",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
+
 
 # ─── Всі пісні артиста ────────────────────────────────────────────────────────
 async def show_artist(msg, artist, uid, ctx, max_songs=10):
@@ -3071,6 +3687,7 @@ async def show_artist(msg, artist, uid, ctx, max_songs=10):
         else:
             await msg.reply_text(label, reply_markup=InlineKeyboardMarkup(chunk), parse_mode="HTML")
 
+
 # ─── Batch download — з затримкою для rate limit ──────────────────────────────
 async def batch_download(msg, artist, uid, ctx, size=20):
     status = await msg.reply_text(
@@ -3108,6 +3725,7 @@ async def batch_download(msg, artist, uid, ctx, size=20):
             except Exception as e:
                 logger.error(f"Batch: {e}")
     await status.edit_text(f"✅ Завантажено {ok} з {len(tracks)} пісень!")
+
 
 # ─── Бібліотека ───────────────────────────────────────────────────────────────
 async def show_library(msg, uid, ctx):
@@ -3151,6 +3769,7 @@ async def show_library(msg, uid, ctx):
     except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
+
 # ─── Профіль ──────────────────────────────────────────────────────────────────
 async def show_profile(msg, uid):
     u = get_user(uid)
@@ -3179,6 +3798,7 @@ async def show_profile(msg, uid):
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
     except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+
 
 # ─── Підписка ──────────────────────────────────────────────────────────────────
 async def show_sub(msg, uid, ctx=None):
@@ -3209,7 +3829,7 @@ async def show_sub(msg, uid, ctx=None):
             f"* Радіо режим\n"
             f"* Розпізнавання музики\n"
             f"* Тексти пісень\n"
-            f"* Пошук схожої музики\n"
+            f"* Пошук схожої музики (Last.fm)\n"
             f"* Batch download: 20/50/100\n"
             f"* Розширена статистика\n\n"
             f"💰 Оформити Premium: {AUTH_BOT}"
@@ -3223,7 +3843,7 @@ async def show_sub(msg, uid, ctx=None):
             f"📦 ZIP: доступно\n"
             f"📻 Радіо: доступно\n"
             f"🎤 Тексти: доступно\n"
-            f"🤖 Схожа музика: доступно"
+            f"🤖 Схожа музика (Last.fm): доступно"
         )
 
     kb = []
@@ -3278,6 +3898,7 @@ async def show_ref(msg, uid, ctx):
     except Exception:
         await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
+
 # ─── Налаштування ─────────────────────────────────────────────────────────────
 async def show_settings(msg, uid, ctx):
     """Show settings menu."""
@@ -3318,6 +3939,7 @@ async def show_settings(msg, uid, ctx):
     except Exception:
         await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
+
 # ─── Плейлисти меню ───────────────────────────────────────────────────────────
 async def show_playlists_menu(msg, uid, ctx):
     """Show playlists menu."""
@@ -3349,6 +3971,7 @@ async def show_playlists_menu(msg, uid, ctx):
     except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
+
 async def show_playlist(msg, pid, uid, ctx):
     pl, tracks = get_playlist(pid)
     l = get_lang(uid)
@@ -3377,24 +4000,53 @@ async def show_playlist(msg, pid, uid, ctx):
     except Exception:
         await msg.reply_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
 
-# ─── Радіо ────────────────────────────────────────────────────────────────────
+
+# ─── Радіо — ПОКРАЩЕНИЙ з Last.fm ────────────────────────────────────────────
 async def start_radio(msg, seed, uid, ctx):
     status = await msg.reply_text(
         f"📻 Створюю радіо на основі <b>{seed}</b>…", parse_mode="HTML"
     )
 
+    # 1. Шукаємо seed треки
     seed_tracks = await async_search(seed, limit=5)
     if not seed_tracks:
         await status.edit_text("😔 Не вдалося створити радіо. Спробуй інший запит.")
         return
 
     radio_tracks = []
-    for t in seed_tracks[:2]:
-        similar = await async_artist(t.get("channel", seed), 10)
-        radio_tracks.extend(similar)
+    seed_artist = seed_tracks[0].get("channel", seed)
 
+    # 2. Last.fm — схожі артисти
+    try:
+        similar_artists = await async_lastfm_similar_artists(seed_artist, limit=10)
+        for sim_artist in similar_artists[:5]:
+            sim_tracks = await async_artist(sim_artist, 5)
+            radio_tracks.extend(sim_tracks)
+    except Exception as e:
+        logger.warning(f"Last.fm radio failed: {e}")
+
+    # 3. Схожі треки з SoundCloud
+    similar = await async_artist(seed_artist, 10)
+    radio_tracks.extend(similar)
+
+    # 4. Random popular tracks
     random_tracks = await async_search("popular music 2024", limit=10)
     radio_tracks.extend(random_tracks)
+
+    # 5. Last.fm — схожі треки для seed
+    try:
+        if seed_tracks and seed_tracks[0].get("channel") and seed_tracks[0].get("title"):
+            lf_similar = await async_lastfm_similar_tracks(
+                seed_tracks[0]["channel"],
+                seed_tracks[0]["title"].replace(f"{seed_tracks[0]['channel']} - ", ""),
+                limit=10
+            )
+            for sim in lf_similar:
+                sc_query = f"{sim['artist']} {sim['title']}"
+                sc_results = await async_search(sc_query, limit=3)
+                radio_tracks.extend(sc_results)
+    except Exception as e:
+        logger.warning(f"Last.fm similar tracks radio failed: {e}")
 
     random.shuffle(radio_tracks)
     radio_tracks = radio_tracks[:30]
@@ -3418,12 +4070,14 @@ async def start_radio(msg, seed, uid, ctx):
         f"🎵 <b>Зараз грає:</b> {first['title']}\n"
         f"👤 {first.get('channel', '—')}\n"
         f"⏱ {first['duration']}\n\n"
-        f"📊 В черзі: {len(radio_tracks)} треків",
+        f"📊 В черзі: {len(radio_tracks)} треків\n"
+        f"<i>Powered by Last.fm + SoundCloud</i>",
         reply_markup=kb,
         parse_mode="HTML"
     )
 
     await do_download(msg, first["url"], first["title"], first.get("channel", ""), uid, ctx)
+
 
 # ─── Статистика прослуховування ───────────────────────────────────────────────
 async def show_stats(msg, uid):
@@ -3456,48 +4110,114 @@ async def show_stats(msg, uid):
     except Exception:
         await msg.reply_text(txt[:4096], reply_markup=kb, parse_mode="HTML")
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ПОКРАЩЕНА СХОЖА МУЗИКА — Last.fm artist.getSimilar
+# ═══════════════════════════════════════════════════════════════════════════════
 async def ai_recommend(msg, query, uid, ctx):
-    """Find similar music based on artist or genre."""
+    """Find similar music based on artist or genre using Last.fm."""
     l = get_lang(uid)
-    status = await msg.reply_text(f"🤖 Шукаю схожу музику для <b>{query}</b>…", parse_mode="HTML")
+    status = await msg.reply_text(f"🤖 Шукаю схожу музику для <b>{query}</b>…\n<i>Last.fm + SoundCloud + Bandcamp</i>", parse_mode="HTML")
+
+    # 1. Шукаємо seed треки
     seed_tracks = await async_search(query, limit=5)
     if not seed_tracks:
         await status.edit_text("😔 Не знайдено базовий трек. Спробуй інший запит.")
         return
+
     seed_artist = seed_tracks[0].get("channel", query)
-    similar = await async_artist(seed_artist, limit=20)
-    related_queries = [f"{seed_artist} similar", f"like {seed_artist}", f"artists similar to {seed_artist}"]
+    similar = []
+    seen = set()
+
+    # 2. Last.fm — схожі артисти (ГОЛОВНЕ)
+    try:
+        similar_artists = await async_lastfm_similar_artists(seed_artist, limit=15)
+        for sim_artist in similar_artists:
+            # Шукаємо треки схожого артиста
+            sim_tracks = await async_artist(sim_artist, limit=5)
+            for t in sim_tracks:
+                if t["url"] not in seen:
+                    seen.add(t["url"])
+                    t["source_icon"] = "🎵"
+                    similar.append(t)
+            # Також шукаємо на Bandcamp
+            try:
+                bc = bandcamp_search(sim_artist, limit=3)
+                for b in bc:
+                    if not b.get("is_album") and b["url"] not in seen:
+                        seen.add(b["url"])
+                        b["duration"] = "—"
+                        b["channel"] = b.get("artist", "Bandcamp")
+                        b["source_icon"] = "🟠"
+                        similar.append(b)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Last.fm similar artists failed: {e}")
+
+    # 3. Last.fm — схожі треки
+    try:
+        if seed_tracks[0].get("channel") and seed_tracks[0].get("title"):
+            track_title = seed_tracks[0]["title"].replace(f"{seed_tracks[0]['channel']} - ", "")
+            lf_similar = await async_lastfm_similar_tracks(seed_artist, track_title, limit=10)
+            for sim in lf_similar:
+                sc_query = f"{sim['artist']} {sim['title']}"
+                sc_results = await async_search(sc_query, limit=3)
+                for t in sc_results:
+                    if t["url"] not in seen:
+                        seen.add(t["url"])
+                        t["source_icon"] = "🎵"
+                        similar.append(t)
+    except Exception as e:
+        logger.warning(f"Last.fm similar tracks failed: {e}")
+
+    # 4. Додаємо треки самого артиста (як резерв)
+    artist_tracks = await async_artist(seed_artist, limit=10)
+    for t in artist_tracks:
+        if t["url"] not in seen:
+            seen.add(t["url"])
+            t["source_icon"] = "🎵"
+            similar.append(t)
+
+    # 5. Додаємо треки з пошуку "similar to"
+    related_queries = [f"similar to {seed_artist}", f"like {seed_artist}", f"artists similar to {seed_artist}"]
     for rq in related_queries:
         try:
-            extra = await async_search(rq, limit=10)
+            extra = await async_search(rq, limit=5)
             for t in extra:
-                if t["url"] not in [x["url"] for x in similar]:
+                if t["url"] not in seen:
+                    seen.add(t["url"])
+                    t["source_icon"] = "🎵"
                     similar.append(t)
         except Exception:
             pass
-    seen = set()
-    unique = []
-    for t in similar:
-        if t["url"] not in seen:
-            seen.add(t["url"])
-            unique.append(t)
-    similar = unique[:20]
+
     if not similar:
         await status.edit_text("😔 Не знайдено схожої музики.")
         return
+
     await status.delete()
     ck = f"ai_{uid}_{query}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
     ctx.bot_data.setdefault("cache", {})[ck] = similar
+
     kb = []
     for i, t in enumerate(similar[:10]):
-        icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
+        icon = t.get("source_icon", "🎵")
         kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
     kb.append([back_btn(uid)])
-    text = f"🤖 <b>Схожа музика для:</b> {query}\n🎤 <b>Базовий артист:</b> {seed_artist}\n\nЗнайдено {len(similar)} треків:\n\nОбери пісню 👇"
+
+    text = (
+        f"🤖 <b>Схожа музика для:</b> {query}\n"
+        f"🎤 <b>Базовий артист:</b> {seed_artist}\n"
+        f"<i>Powered by Last.fm</i>\n\n"
+        f"Знайдено {len(similar)} треків:\n\n"
+        f"Обери пісню 👇"
+    )
     try:
         await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
     except Exception:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MAIN
@@ -3517,7 +4237,7 @@ def main():
     # Хендлери повідомлень
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    logger.info("🚀 MusicLSP v3.0 запускається...")
+    logger.info("🚀 MusicLSP v3.2 запускається...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
