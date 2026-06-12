@@ -1540,7 +1540,23 @@ def search_all(query, limit=10):
     except Exception as e:
         logger.warning(f"VK search error: {e}")
 
-    # 6. Last.fm — пошук треків, потім шукаємо на SoundCloud
+    # 6. YouTube Music — останній fallback для популярних треків
+    try:
+        yt = yt_search(query, limit=limit)
+        for track in yt:
+            if track.get("url"):
+                title_key = track["title"].lower().strip()
+                if title_key not in seen_titles:
+                    seen_titles.add(title_key)
+                    results.append({
+                        **track,
+                        "icon": "🔴",
+                        "index": len(results),
+                    })
+    except Exception as e:
+        logger.warning(f"YouTube search error: {e}")
+
+    # 7. Last.fm — пошук треків, потім шукаємо на SoundCloud
     try:
         lf = lastfm_search_track(query, limit=limit)
         for track in lf:
@@ -2446,6 +2462,35 @@ def vk_get_album_tracks(owner_id, playlist_id, access_key=""):
         "source": "vk",
         "owner_id": owner_id,
     }
+
+
+def yt_search(query, limit=10):
+    """Search YouTube via yt-dlp."""
+    try:
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": True,
+            "default_search": "ytsearch",
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            results = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+            if results and "entries" in results:
+                tracks = []
+                for entry in results["entries"]:
+                    if entry:
+                        tracks.append({
+                            "title": entry.get("title", "Unknown"),
+                            "url": entry.get("url") or entry.get("webpage_url", ""),
+                            "id": str(entry.get("id", "")),
+                            "duration": fmt_dur(entry.get("duration", 0)),
+                            "channel": entry.get("uploader", "Unknown"),
+                            "source": "youtube",
+                        })
+                return tracks
+    except Exception as e:
+        logger.warning(f"YouTube search failed: {e}")
+    return []
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TELEGRAM HANDLERS
