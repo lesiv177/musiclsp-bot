@@ -3550,12 +3550,7 @@ async def show_vk_album(msg, owner_id, playlist_id, uid, ctx):
     artist = album['artist']
     total_tracks = album['total_tracks']
     total_duration = album['total_duration']
-    text = f"📀 <b>{album_name}</b>
-
-🎤 {artist}
-🎵 {total_tracks} треків
-⏱ {total_duration}
-🔵 VK"
+    text = "📀 <b>" + album_name + "</b>" + chr(10) + chr(10) + "🎤 " + artist + chr(10) + "🎵 " + str(total_tracks) + " треків" + chr(10) + "⏱ " + total_duration + chr(10) + "🔵 VK"
 
     kb = []
     for i, track in enumerate(album["tracks"][:15]):
@@ -3874,10 +3869,7 @@ async def do_download_vk_album_zip(msg, album_data, uid, ctx):
 
     await status.edit_text("📤 Відправляю ZIP…")
     safe_name = ("VK - " + album_data['name'])[:50]
-    caption = f"💿 <b>{escape_html(album_data['name'])}</b>
-🎤 {escape_html(album_data['artist'])}
-📦 {len(tracks_with_url)} треків
-🔵 VK"
+    caption = "💿 <b>" + escape_html(album_data['name']) + "</b>" + chr(10) + "🎤 " + escape_html(album_data['artist']) + chr(10) + "📦 " + str(len(tracks_with_url)) + " треків" + chr(10) + "🔵 VK"
 
     await msg.reply_document(
         document=open(zip_path, 'rb'),
