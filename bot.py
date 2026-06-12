@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MusicLSP v3.2 — Deezer + SoundCloud + Spotify + Last.fm + Bandcamp
+MusicLSP v3.3 — Deezer + SoundCloud + Spotify + Last.fm + Bandcamp + VK
 Робота без cookies, Deezer API для пошуку, SoundCloud/Deezer/Spotify/Last.fm/Bandcamp для завантаження
 """
 
@@ -393,7 +393,7 @@ def bandcamp_search(query, limit=10):
             "fan_id": "1",
         }
         headers = {
-            "User-Agent": f"MusicLSP/3.2 ({AUTHOR})",
+            "User-Agent": f"MusicLSP/3.3 ({AUTHOR})",
             "Accept": "application/json",
         }
         resp = requests.get(url, params=params, headers=headers, timeout=15)
@@ -431,7 +431,7 @@ def bandcamp_search(query, limit=10):
 def bandcamp_get_track_info(track_url):
     """Get track info from Bandcamp track URL."""
     try:
-        headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
+        headers = {"User-Agent": f"MusicLSP/3.3 ({AUTHOR})"}
         resp = requests.get(track_url, headers=headers, timeout=15)
         resp.raise_for_status()
         html = resp.text
@@ -461,7 +461,7 @@ def bandcamp_get_track_info(track_url):
 def bandcamp_get_album_tracks(album_url):
     """Get tracks from Bandcamp album page."""
     try:
-        headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
+        headers = {"User-Agent": f"MusicLSP/3.3 ({AUTHOR})"}
         resp = requests.get(album_url, headers=headers, timeout=15)
         resp.raise_for_status()
         html = resp.text
@@ -1531,7 +1531,16 @@ def search_all(query, limit=10):
     except Exception as e:
         logger.warning(f"Bandcamp search error: {e}")
 
-    # 5. Last.fm — пошук треків, потім шукаємо на SoundCloud
+    # 5. VK — російська/українська музика, ремікси, забанені треки
+    try:
+        vk = vk_search_tracks(query, limit=limit)
+        for track in vk:
+            if track.get("url"):
+                add_result(track, "🔵")
+    except Exception as e:
+        logger.warning(f"VK search error: {e}")
+
+    # 6. Last.fm — пошук треків, потім шукаємо на SoundCloud
     try:
         lf = lastfm_search_track(query, limit=limit)
         for track in lf:
@@ -1843,7 +1852,31 @@ def find_track_for_download(track_name, artist_name):
         except Exception as e:
             logger.warning(f"Bandcamp search failed for '{query}': {e}")
 
-    # 5. Last.fm — шукаємо схожі треки або альтернативні назви
+    # 5. VK — російська/українська музика
+    for query in queries:
+        try:
+            vk = vk_search_tracks(query, limit=5)
+            if vk:
+                for v in vk:
+                    if v.get("url"):
+                        title_lower = v["title"].lower()
+                        if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                            return {
+                                "title": v["title"],
+                                "url": v["url"],
+                                "source": "vk",
+                            }
+                # Перший з результатів
+                if vk[0].get("url"):
+                    return {
+                        "title": vk[0]["title"],
+                        "url": vk[0]["url"],
+                        "source": "vk",
+                    }
+        except Exception as e:
+            logger.warning(f"VK search failed for '{query}': {e}")
+
+    # 6. Last.fm — шукаємо схожі треки або альтернативні назви
     try:
         lf_similar = lastfm_get_similar_tracks(artist_name, track_name, limit=10)
         for sim in lf_similar:
@@ -1983,7 +2016,7 @@ def mb_search_album(query, limit=10):
     import urllib.parse
     encoded = urllib.parse.quote(query)
     url = f"https://musicbrainz.org/ws/2/release/?query=release:{encoded}&fmt=json&limit={limit}"
-    headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
+    headers = {"User-Agent": f"MusicLSP/3.3 ({AUTHOR})"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -1997,7 +2030,7 @@ def mb_search_album(query, limit=10):
 
 def mb_get_full_album_info(mbid):
     url = f"https://musicbrainz.org/ws/2/release/{mbid}?inc=recordings+artists+labels&fmt=json"
-    headers = {"User-Agent": f"MusicLSP/3.2 ({AUTHOR})"}
+    headers = {"User-Agent": f"MusicLSP/3.3 ({AUTHOR})"}
     try:
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -2137,6 +2170,14 @@ async def async_bandcamp_search(query, limit=10):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, bandcamp_search, query, limit)
 
+async def async_vk_search_tracks(query, limit=10):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, vk_search_tracks, query, limit)
+
+async def async_vk_get_album_tracks(owner_id, playlist_id):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, vk_get_album_tracks, owner_id, playlist_id)
+
 async def async_lastfm_similar_artists(artist_name, limit=10):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, lastfm_get_similar_artists, artist_name, limit)
@@ -2267,6 +2308,145 @@ async def create_album_zip(tracks, quality="192", tmp_dir=None):
     if downloaded == 0:
         return None
     return zip_path
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  VK AUDIO API — ПОШУК ТРЕКІВ ТА АЛЬБОМІВ
+# ═══════════════════════════════════════════════════════════════════════════════
+
+VK_ACCESS_TOKEN = os.environ.get("VK_ACCESS_TOKEN", "")
+VK_API_VERSION = "5.199"
+
+def vk_request(method, **params):
+    """Make VK API request."""
+    if not VK_ACCESS_TOKEN:
+        logger.warning("VK token not configured")
+        return None
+    url = f"https://api.vk.com/method/{method}"
+    params["access_token"] = VK_ACCESS_TOKEN
+    params["v"] = VK_API_VERSION
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            err = data["error"]
+            logger.warning(f"VK API error: {err.get('error_msg', 'Unknown')} (code {err.get('error_code', '?')})")
+            return None
+        return data.get("response")
+    except Exception as e:
+        logger.warning(f"VK request failed ({method}): {e}")
+        return None
+
+def vk_search_tracks(query, limit=10, offset=0):
+    """Search tracks on VK."""
+    data = vk_request("audio.search", q=query, count=limit, offset=offset, sort=2)
+    if not data or "items" not in data:
+        return []
+    tracks = []
+    for item in data["items"]:
+        artist = item.get("artist", "Unknown")
+        title = item.get("title", "Unknown")
+        tracks.append({
+            "title": f"{artist} - {title}",
+            "url": item.get("url", ""),
+            "id": str(item.get("id", "")),
+            "owner_id": str(item.get("owner_id", "")),
+            "duration": fmt_dur(item.get("duration", 0)),
+            "duration_sec": item.get("duration", 0),
+            "channel": artist,
+            "source": "vk",
+            "vk_id": f"{item.get('owner_id', '')}_{item.get('id', '')}",
+            "genre_id": item.get("genre_id", 0),
+        })
+    logger.info(f"VK search: {len(tracks)} results for '{query}'")
+    return tracks
+
+def vk_get_track_by_id(owner_id, audio_id):
+    """Get track info by ID."""
+    data = vk_request("audio.getById", audios=f"{owner_id}_{audio_id}")
+    if data and len(data) > 0:
+        item = data[0]
+        return {
+            "title": f"{item.get('artist', 'Unknown')} - {item.get('title', 'Unknown')}",
+            "url": item.get("url", ""),
+            "duration": fmt_dur(item.get("duration", 0)),
+            "channel": item.get("artist", "Unknown"),
+            "source": "vk",
+            "vk_id": f"{item.get('owner_id', '')}_{item.get('id', '')}",
+        }
+    return None
+
+def vk_search_albums(query, limit=10):
+    """Search VK playlists (albums)."""
+    data = vk_request("audio.searchPlaylists", q=query, count=limit)
+    if not data or "items" not in data:
+        return []
+    albums = []
+    for item in data["items"]:
+        owner_id = item.get("owner_id", "")
+        playlist_id = item.get("id", "")
+        albums.append({
+            "id": str(playlist_id),
+            "owner_id": str(owner_id),
+            "name": item.get("title", "Unknown Playlist"),
+            "artist": item.get("owner_name", "VK User"),
+            "description": item.get("description", ""),
+            "total_tracks": item.get("count", 0),
+            "image_url": item.get("photo", {}).get("photo_135", item.get("photo", {}).get("photo_68", "")),
+            "source": "vk",
+            "plays": item.get("plays", 0),
+            "year": "—",
+        })
+    logger.info(f"VK album search: {len(albums)} results for '{query}'")
+    return albums
+
+def vk_get_album_tracks(owner_id, playlist_id, access_key=""):
+    """Get tracks from VK playlist."""
+    params = {"owner_id": owner_id, "playlist_id": playlist_id}
+    if access_key:
+        params["access_key"] = access_key
+    data = vk_request("audio.get", **params)
+    if not data or "items" not in data:
+        return None
+
+    tracks = []
+    total_duration = 0
+    for i, item in enumerate(data["items"]):
+        dur = item.get("duration", 0)
+        total_duration += dur
+        artist = item.get("artist", "Unknown")
+        tracks.append({
+            "name": item.get("title", "Unknown"),
+            "artists": artist,
+            "duration": fmt_dur(dur),
+            "duration_sec": dur,
+            "track_number": i + 1,
+            "url": item.get("url", ""),
+            "vk_id": f"{item.get('owner_id', '')}_{item.get('id', '')}",
+        })
+
+    # Get playlist info
+    pl_info = vk_request("audio.getPlaylistById", owner_id=owner_id, playlist_id=playlist_id)
+    album_name = "VK Playlist"
+    if pl_info:
+        album_name = pl_info.get("title", "VK Playlist")
+
+    return {
+        "id": playlist_id,
+        "name": album_name,
+        "artist": "VK User",
+        "release_date": "—",
+        "year": "—",
+        "total_tracks": len(tracks),
+        "tracks": tracks,
+        "total_duration": fmt_dur(total_duration),
+        "total_duration_sec": total_duration,
+        "label": "VK",
+        "image_url": "",
+        "source": "vk",
+        "owner_id": owner_id,
+    }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TELEGRAM HANDLERS
@@ -2916,6 +3096,43 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download_bandcamp_album_zip(q.message, album_data, uid, ctx)
         return
 
+    # VK album callbacks
+    if data.startswith("vk_album|"):
+        parts = data.split("|", 2)
+        owner_id = parts[1]
+        playlist_id = parts[2]
+        await show_vk_album(q.message, owner_id, playlist_id, uid, ctx)
+        return
+
+    if data.startswith("vk_track|"):
+        parts = data.split("|", 2)
+        album_ck = parts[1]
+        track_idx = int(parts[2])
+        album_data = ctx.bot_data.get("vk_album_cache", {}).get(album_ck)
+        if not album_data or track_idx >= len(album_data.get("tracks", [])):
+            await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
+            return
+        track = album_data["tracks"][track_idx]
+        if track.get("url"):
+            await do_download(
+                q.message, track["url"], track["name"], track["artists"], uid, ctx
+            )
+        else:
+            await q.message.reply_text("❌ Цей трек недоступний для завантаження.")
+        return
+
+    if data == "vk_albumzip":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        album_ck = ctx.bot_data.get("last_vk_album_ck", "")
+        album_data = ctx.bot_data.get("vk_album_cache", {}).get(album_ck)
+        if not album_data:
+            await q.message.reply_text("❌ Дані альбому застаріли.")
+            return
+        await do_download_vk_album_zip(q.message, album_data, uid, ctx)
+        return
+
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -3124,6 +3341,13 @@ async def do_album_search(update, query, uid, ctx):
     except Exception as e:
         logger.warning(f"Bandcamp album search failed: {e}")
 
+    # 5. VK playlists
+    vk_albums = []
+    try:
+        vk_albums = vk_search_albums(query, limit=5)
+    except Exception as e:
+        logger.warning(f"VK album search failed: {e}")
+
     kb = []
 
     # Deezer albums
@@ -3163,6 +3387,15 @@ async def do_album_search(update, query, uid, ctx):
             )
         ])
 
+    # VK playlists
+    for album in vk_albums[:3]:
+        kb.append([
+            InlineKeyboardButton(
+                f"🔵 VK: {album['name'][:25]} — {album['artist'][:15]} ({album['total_tracks']} тр.)",
+                callback_data=f"vk_album|{album['owner_id']}|{album['id']}"
+            )
+        ])
+
     kb.append([back_btn(uid)])
 
     if not kb[:-1]:
@@ -3184,6 +3417,8 @@ async def do_album_search(update, query, uid, ctx):
         sources_text.append(f"🔴 MusicBrainz: {len(mb_results)}")
     if bc_results:
         sources_text.append(f"🟠 Bandcamp: {len(bc_results)}")
+    if vk_albums:
+        sources_text.append(f"🔵 VK: {len(vk_albums)}")
 
     text = (
         f"🎵 <b>Результати пошуку альбомів:</b> «{query}»\n"
@@ -3300,6 +3535,44 @@ async def show_mb_album(msg, mbid, uid, ctx):
 
 
 # ─── Bandcamp: Показати альбом ────────────────────────────────────────────────
+async def show_vk_album(msg, owner_id, playlist_id, uid, ctx):
+    """Show VK playlist info."""
+    status = await msg.reply_text("💿 Завантажую інформацію з VK…", parse_mode="HTML")
+    album = await async_vk_get_album_tracks(owner_id, playlist_id)
+    if not album:
+        await status.edit_text("❌ Не вдалося отримати дані з VK.")
+        return
+
+    ck = hashlib.md5(f"{uid}_{owner_id}_{playlist_id}".encode()).hexdigest()[:8]
+    ctx.bot_data.setdefault("vk_album_cache", {})[ck] = album
+    ctx.bot_data["last_vk_album_ck"] = ck
+
+    text = (
+        f"📀 <b>{escape_html(album['name'])}</b>
+
+"
+        f"🎤 {album['artist']}
+"
+        f"🎵 {album['total_tracks']} треків
+"
+        f"⏱ {album['total_duration']}
+"
+        f"🔵 VK"
+    )
+
+    kb = []
+    for i, track in enumerate(album["tracks"][:15]):
+        kb.append([InlineKeyboardButton(
+            f"▶️ {i+1}. {escape_html(track['name'])[:35]}",
+            callback_data=f"vk_track|{ck}|{i}"
+        )])
+
+    kb.append([InlineKeyboardButton("📦 ZIP", callback_data="vk_albumzip")])
+    kb.append([back_btn(uid)])
+
+    await status.delete()
+    await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
 async def show_bandcamp_album(msg, album_url, uid, ctx):
     status = await msg.reply_text("💿 Завантажую інформацію з Bandcamp…", parse_mode="HTML")
     album = bandcamp_get_album_tracks(album_url)
@@ -3568,6 +3841,57 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
     os.unlink(zip_path)
 
 
+async def do_download_vk_album_zip(msg, album_data, uid, ctx):
+    """Download VK album as ZIP."""
+    l = get_lang(uid)
+    status = await msg.reply_text(
+        f"⬇️ Завантажую альбом з VK: <b>{album_data['name']}</b>…",
+        parse_mode="HTML"
+    )
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    tracks_with_url = []
+
+    for i, track in enumerate(album_data["tracks"]):
+        if track.get("url"):
+            tracks_with_url.append({
+                "title": f"{track['artists']} — {track['name']}",
+                "url": track["url"],
+            })
+        await asyncio.sleep(0.2)
+
+    if not tracks_with_url:
+        await status.edit_text("😔 Не знайдено жодного доступного трека.")
+        return
+
+    await status.edit_text(f"⬇️ Завантажую {len(tracks_with_url)} треків…")
+
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+
+    if not zip_path:
+        await status.edit_text("❌ Помилка створення архіву.")
+        return
+
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
+    if size_mb > 2000:
+        await status.edit_text(f"❌ Архів завеликий ({size_mb:.1f} МБ).")
+        return
+
+    await status.edit_text("📤 Відправляю ZIP…")
+    safe_name = f"VK - {album_data['name']}"[:50]
+
+    await msg.reply_document(
+        document=open(zip_path, 'rb'),
+        filename=f"{safe_name}.zip",
+        caption=f"💿 <b>{escape_html(album_data['name'])}</b>
+🎤 {escape_html(album_data['artist'])}
+📦 {len(tracks_with_url)} треків
+🔵 VK",
+        parse_mode="HTML"
+    )
+    await status.delete()
+    os.unlink(zip_path)
+
 async def do_download_bandcamp_album_zip(msg, album_data, uid, ctx):
     """Download Bandcamp album as ZIP."""
     l = get_lang(uid)
@@ -3641,6 +3965,13 @@ async def do_zip_album_search(update, query, uid, ctx):
     except Exception:
         pass
 
+    # VK playlists
+    vk_albums = []
+    try:
+        vk_albums = vk_search_albums(query, limit=5)
+    except Exception:
+        pass
+
     kb = []
     for album in spotify_results[:3]:
         kb.append([
@@ -3664,6 +3995,13 @@ async def do_zip_album_search(update, query, uid, ctx):
                 callback_data=f"bc_album|{album['url']}"
             )
         ])
+    for album in vk_albums[:3]:
+        kb.append([
+            InlineKeyboardButton(
+                f"🔵 VK: {album['name'][:30]} — {album['artist'][:20]}",
+                callback_data=f"vk_album|{album['owner_id']}|{album['id']}"
+            )
+        ])
     kb.append([back_btn(uid)])
 
     if not kb[:-1]:
@@ -3674,7 +4012,8 @@ async def do_zip_album_search(update, query, uid, ctx):
         "📦 <b>Обери альбом для ZIP:</b>\n\n"
         "🟢 — Spotify (краща якість метаданих)\n"
         "🔴 — MusicBrainz (більше незалежної музики)\n"
-        "🟠 — Bandcamp (інді/андерграунд)",
+        "🟠 — Bandcamp (інді/андерграунд)\n"
+        "🔵 — VK (російська/українська, ремікси, забанені)",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
@@ -4269,7 +4608,7 @@ def main():
     # Хендлери повідомлень
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    logger.info("🚀 MusicLSP v3.2 запускається...")
+    logger.info("🚀 MusicLSP v3.3 запускається...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
