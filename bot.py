@@ -2309,7 +2309,6 @@ async def create_album_zip(tracks, quality="192", tmp_dir=None):
         return None
     return zip_path
 
-
 # ═══════════════════════════════════════════════════════════════════════════════
 #  VK AUDIO API — ПОШУК ТРЕКІВ ТА АЛЬБОМІВ
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3547,18 +3546,16 @@ async def show_vk_album(msg, owner_id, playlist_id, uid, ctx):
     ctx.bot_data.setdefault("vk_album_cache", {})[ck] = album
     ctx.bot_data["last_vk_album_ck"] = ck
 
-    text = (
-        f"📀 <b>{escape_html(album['name'])}</b>
+    album_name = escape_html(album['name'])
+    artist = album['artist']
+    total_tracks = album['total_tracks']
+    total_duration = album['total_duration']
+    text = f"📀 <b>{album_name}</b>
 
-"
-        f"🎤 {album['artist']}
-"
-        f"🎵 {album['total_tracks']} треків
-"
-        f"⏱ {album['total_duration']}
-"
-        f"🔵 VK"
-    )
+🎤 {artist}
+🎵 {total_tracks} треків
+⏱ {total_duration}
+🔵 VK"
 
     kb = []
     for i, track in enumerate(album["tracks"][:15]):
@@ -3844,17 +3841,15 @@ async def do_download_mb_album_zip(msg, album_data, uid, ctx):
 async def do_download_vk_album_zip(msg, album_data, uid, ctx):
     """Download VK album as ZIP."""
     l = get_lang(uid)
-    status = await msg.reply_text(
-        f"⬇️ Завантажую альбом з VK: <b>{album_data['name']}</b>…",
-        parse_mode="HTML"
-    )
+    album_name = escape_html(album_data['name'])
+    status = await msg.reply_text(f"⬇️ Завантажую альбом з VK: <b>{album_name}</b>…", parse_mode="HTML")
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     tracks_with_url = []
 
     for i, track in enumerate(album_data["tracks"]):
         if track.get("url"):
             tracks_with_url.append({
-                "title": f"{track['artists']} — {track['name']}",
+                "title": track['artists'] + " — " + track['name'],
                 "url": track["url"],
             })
         await asyncio.sleep(0.2)
@@ -3878,15 +3873,16 @@ async def do_download_vk_album_zip(msg, album_data, uid, ctx):
         return
 
     await status.edit_text("📤 Відправляю ZIP…")
-    safe_name = f"VK - {album_data['name']}"[:50]
+    safe_name = ("VK - " + album_data['name'])[:50]
+    caption = f"💿 <b>{escape_html(album_data['name'])}</b>
+🎤 {escape_html(album_data['artist'])}
+📦 {len(tracks_with_url)} треків
+🔵 VK"
 
     await msg.reply_document(
         document=open(zip_path, 'rb'),
-        filename=f"{safe_name}.zip",
-        caption=f"💿 <b>{escape_html(album_data['name'])}</b>
-🎤 {escape_html(album_data['artist'])}
-📦 {len(tracks_with_url)} треків
-🔵 VK",
+        filename=safe_name + ".zip",
+        caption=caption,
         parse_mode="HTML"
     )
     await status.delete()
@@ -4009,10 +4005,15 @@ async def do_zip_album_search(update, query, uid, ctx):
         return
 
     await msg.edit_text(
-        "📦 <b>Обери альбом для ZIP:</b>\n\n"
-        "🟢 — Spotify (краща якість метаданих)\n"
-        "🔴 — MusicBrainz (більше незалежної музики)\n"
-        "🟠 — Bandcamp (інді/андерграунд)\n"
+        "📦 <b>Обери альбом для ZIP:</b>
+
+"
+        "🟢 — Spotify (краща якість метаданих)
+"
+        "🔴 — MusicBrainz (більше незалежної музики)
+"
+        "🟠 — Bandcamp (інді/андерграунд)
+"
         "🔵 — VK (російська/українська, ремікси, забанені)",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
