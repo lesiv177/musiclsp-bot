@@ -2270,14 +2270,19 @@ def download_mp3(url, out_dir, quality="192"):
         return None
 
 async def async_download_with_fallback(url, out_dir, quality="192"):
+    """Download from direct URL. If fails (e.g. SoundCloud DRM), return None 
+    so caller can use aggregator fallback instead of retrying same source."""
     result = await async_download(url, out_dir, quality)
     if result:
         return result
-    logger.info("Trying alternative download method...")
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _alt_download, url, out_dir, quality)
+    # Don't retry with _alt_download — it will hit same DRM/region block.
+    # Let do_download's aggregator fallback find alternative source (VK, etc.)
+    logger.info(f"Direct download failed for {url}, will use aggregator fallback")
+    return None
 
 def _alt_download(url, out_dir, quality="192"):
+    """DEPRECATED: Kept for compatibility but not used in fallback chain.
+    Use find_track_for_download + async_download instead for blocked URLs."""
     opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
@@ -3688,54 +3693,63 @@ async def show_spotify_album(msg, album_id, uid, ctx):
 
 # ─── Основна функція завантаження ────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
-    """Download track and send to user. With aggregator fallback."""
+    """Download track and send to user. With aggregator fallback.
+
+    Flow:
+    1. Try direct download from provided URL
+    2. If fails (DRM, region block, dead link) → use find_track_for_download aggregator
+       which searches: SoundCloud → Deezer → Spotify → Bandcamp → VK → Last.fm
+    3. Download from alternative source
+    """
     l = get_lang(uid)
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     txts = {
-        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло", "big": "😤 Завеликий файл", "fallback": "🔍 Шукаю через агрегатор..."},
-        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло", "big": "😤 Слишком большой", "fallback": "🔍 Ищу через агрегатор..."},
-        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Failed", "big": "😤 Too big", "fallback": "🔍 Searching via aggregator..."},
-        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Raté", "big": "😤 Trop gros", "fallback": "🔍 Recherche via agrégateur..."},
+        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло завантажити", "big": "😤 Завеликий файл", "fallback": "🔍 Шукаю альтернативне джерело...", "retry": "🔄 Джерело недоступне, шукаю інше..."},
+        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло скачать", "big": "😤 Слишком большой", "fallback": "🔍 Ищу альтернативный источник...", "retry": "🔄 Источник недоступен, ищу другой..."},
+        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Download failed", "big": "😤 Too big", "fallback": "🔍 Searching alternative source...", "retry": "🔄 Source unavailable, searching another..."},
+        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Échec du téléchargement", "big": "😤 Trop gros", "fallback": "🔍 Recherche source alternative...", "retry": "🔄 Source indisponible, recherche d'une autre..."},
     }
     t = txts.get(l, txts["en"])
 
     status = await msg.reply_text(t["search"], parse_mode="HTML")
 
+    # ─── Parse title/artist for aggregator ───
+    track_name = title
+    artist_name = artist or ""
+    if " - " in title and not artist_name:
+        parts = title.split(" - ", 1)
+        artist_name = parts[0].strip()
+        track_name = parts[1].strip()
+    elif not artist_name:
+        artist_name = "Unknown"
+
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            await status.edit_text(t["dl"], parse_mode="HTML")
-            path = await async_download_with_fallback(url, tmp, quality)
+            # ─── STEP 1: Try direct download ───
+            path = None
+            if url:
+                await status.edit_text(t["dl"], parse_mode="HTML")
+                path = await async_download_with_fallback(url, tmp, quality)
 
-            # ─── FALLBACK: якщо прямий завантаження не вдалося — шукаємо через агрегатор ───
+            # ─── STEP 2: If direct fails → aggregator fallback ───
             if not path or not os.path.exists(path):
-                logger.info(f"Direct download failed for '{title}', trying aggregator fallback...")
+                logger.info(f"Direct download failed for '{title}', using aggregator fallback...")
                 await status.edit_text(t["fallback"], parse_mode="HTML")
-
-                # Розбираємо title на artist + track
-                track_name = title
-                artist_name = artist
-                if " - " in title and not artist:
-                    parts = title.split(" - ", 1)
-                    artist_name = parts[0].strip()
-                    track_name = parts[1].strip()
-                elif not artist_name:
-                    artist_name = "Unknown"
 
                 result = await async_find_track(track_name, artist_name)
                 if result and result.get("url"):
                     logger.info(f"Aggregator found: {result['title']} from {result['source']}")
-                    await status.edit_text(f"⚡ Знайдено ({result['source']})! Завантажую...", parse_mode="HTML")
+                    source_icon = {"soundcloud": "🎵", "deezer": "🟣", "spotify": "🟢", 
+                                   "bandcamp": "🟠", "vk": "🔵", "youtube": "🔴"}.get(result.get("source"), "🎵")
+                    await status.edit_text(f"{source_icon} Знайдено: {result['source']}! Завантажую...", parse_mode="HTML")
                     path = await async_download_with_fallback(result["url"], tmp, quality)
-                    # Оновлюємо title/artist якщо знайшли краще
                     if result.get("title"):
                         title = result["title"]
-                    if result.get("source") == "vk":
-                        # VK tracks often have artist in title
-                        pass
                 else:
-                    logger.error(f"Aggregator also failed for '{title}'")
+                    logger.error(f"Aggregator failed for '{track_name}' by '{artist_name}'")
 
+            # ─── STEP 3: If still no path → error ───
             if not path or not os.path.exists(path):
                 await status.edit_text(t["err"])
                 return
