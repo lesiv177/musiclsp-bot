@@ -2329,7 +2329,7 @@ async def create_album_zip(tracks, quality="192", tmp_dir=None):
 #  VK AUDIO API — ПОШУК ТРЕКІВ ТА АЛЬБОМІВ
 # ═══════════════════════════════════════════════════════════════════════════════
 
-VK_ACCESS_TOKEN = os.environ.get("VK_ACCESS_TOKEN", "")
+VK_ACCESS_TOKEN = os.environ.get("VK_ACCESS_TOKEN", "vk1.a.TOe9CQ...")
 VK_API_VERSION = "5.199"
 
 def vk_request(method, **params):
@@ -3688,15 +3688,15 @@ async def show_spotify_album(msg, album_id, uid, ctx):
 
 # ─── Основна функція завантаження ────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
-    """Download track and send to user."""
+    """Download track and send to user. With aggregator fallback."""
     l = get_lang(uid)
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     txts = {
-        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло", "big": "😤 Завеликий файл"},
-        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло", "big": "😤 Слишком большой"},
-        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Failed", "big": "😤 Too big"},
-        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Raté", "big": "😤 Trop gros"},
+        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло", "big": "😤 Завеликий файл", "fallback": "🔍 Шукаю через агрегатор..."},
+        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло", "big": "😤 Слишком большой", "fallback": "🔍 Ищу через агрегатор..."},
+        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Failed", "big": "😤 Too big", "fallback": "🔍 Searching via aggregator..."},
+        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Raté", "big": "😤 Trop gros", "fallback": "🔍 Recherche via agrégateur..."},
     }
     t = txts.get(l, txts["en"])
 
@@ -3706,6 +3706,36 @@ async def do_download(msg, url, title, artist, uid, ctx):
         try:
             await status.edit_text(t["dl"], parse_mode="HTML")
             path = await async_download_with_fallback(url, tmp, quality)
+
+            # ─── FALLBACK: якщо прямий завантаження не вдалося — шукаємо через агрегатор ───
+            if not path or not os.path.exists(path):
+                logger.info(f"Direct download failed for '{title}', trying aggregator fallback...")
+                await status.edit_text(t["fallback"], parse_mode="HTML")
+
+                # Розбираємо title на artist + track
+                track_name = title
+                artist_name = artist
+                if " - " in title and not artist:
+                    parts = title.split(" - ", 1)
+                    artist_name = parts[0].strip()
+                    track_name = parts[1].strip()
+                elif not artist_name:
+                    artist_name = "Unknown"
+
+                result = await async_find_track(track_name, artist_name)
+                if result and result.get("url"):
+                    logger.info(f"Aggregator found: {result['title']} from {result['source']}")
+                    await status.edit_text(f"⚡ Знайдено ({result['source']})! Завантажую...", parse_mode="HTML")
+                    path = await async_download_with_fallback(result["url"], tmp, quality)
+                    # Оновлюємо title/artist якщо знайшли краще
+                    if result.get("title"):
+                        title = result["title"]
+                    if result.get("source") == "vk":
+                        # VK tracks often have artist in title
+                        pass
+                else:
+                    logger.error(f"Aggregator also failed for '{title}'")
+
             if not path or not os.path.exists(path):
                 await status.edit_text(t["err"])
                 return
@@ -3746,6 +3776,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
         except Exception as e:
             logger.error(f"Download error: {e}")
             await status.edit_text(t["err"])
+
 
 
 # ─── ZIP завантаження для альбомів ────────────────────────────────────────────
