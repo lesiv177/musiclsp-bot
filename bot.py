@@ -4088,10 +4088,10 @@ async def do_zip_album_search(update, query, uid, ctx):
 
     await msg.edit_text(
         "📦 <b>Обери альбом для ZIP:</b>" + chr(10) + chr(10) +
-        "🟢 — Spotify (краща якість метаданих)" + chr(10) +
-        "🔴 — MusicBrainz (більше незалежної музики)" + chr(10) +
-        "🟠 — Bandcamp (інді/андерграунд)" + chr(10) +
-        "🔵 — VK (російська/українська, ремікси, забанені)",
+        "🟢 — Spotify (спотіфай)" + chr(10) +
+        "🔴 — MusicBrainz (інфа про альбом)" + chr(10) +
+        "🟠 — Bandcamp (джерело запасне )" + chr(10) +
+        "🔵 — VK (ремікси, забанені)",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
