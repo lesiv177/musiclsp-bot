@@ -1474,7 +1474,7 @@ def sc_search(query, limit=15):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def search_all(query, limit=10):
-    """Search ALL sources. Return unified results with deduplication."""
+    """Search tracks. Primary: SoundCloud. Fallback: Spotify."""
     results = []
     seen_urls = set()
     seen_titles = set()
@@ -1495,226 +1495,23 @@ def search_all(query, limit=10):
         results.append(track)
         return True
 
-    # 1. SoundCloud (основне джерело)
+    # 1. SoundCloud -- PRIMARY
     try:
-        sc = sc_search(query, limit)
-        for track in sc:
+        for track in sc_search(query, limit):
             add_result(track, "🎵")
     except Exception as e:
         logger.warning(f"SoundCloud search error: {e}")
 
-    # 2. Deezer
-    try:
-        dz = dz_search_tracks(query, limit)
-        for track in dz:
-            add_result(track, "🟣")
-    except Exception as e:
-        logger.warning(f"Deezer search error: {e}")
-
-    # 3. Spotify
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    # 2. Spotify -- FALLBACK (if SoundCloud found nothing or few results)
+    if len(results) < 3 and SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         try:
-            spotify_tracks = search_spotify_tracks(query, limit=limit)
-            for track in spotify_tracks:
+            for track in search_spotify_tracks(query, limit=limit):
                 add_result(track, "🟢")
         except Exception as e:
             logger.warning(f"Spotify search error: {e}")
 
-    # 4. Bandcamp (інді/андерграунд)
-    try:
-        bc = bandcamp_search(query, limit=limit)
-        for track in bc:
-            if not track.get("is_album"):
-                track["duration"] = "—"
-                track["channel"] = track.get("artist", "Bandcamp")
-                add_result(track, "🟠")
-    except Exception as e:
-        logger.warning(f"Bandcamp search error: {e}")
-
-    # 5. VK — російська/українська музика, ремікси, забанені треки
-    try:
-        vk = vk_search_tracks(query, limit=limit)
-        for track in vk:
-            if track.get("url"):
-                add_result(track, "🔵")
-    except Exception as e:
-        logger.warning(f"VK search error: {e}")
-
-    # 6. YouTube Music — останній fallback для популярних треків
-    try:
-        yt = yt_search(query, limit=limit)
-        for track in yt:
-            if track.get("url"):
-                title_key = track["title"].lower().strip()
-                if title_key not in seen_titles:
-                    seen_titles.add(title_key)
-                    results.append({
-                        **track,
-                        "icon": "🔴",
-                        "index": len(results),
-                    })
-    except Exception as e:
-        logger.warning(f"YouTube search error: {e}")
-
-    # 7. Last.fm — пошук треків, потім шукаємо на SoundCloud
-    try:
-        lf = lastfm_search_track(query, limit=limit)
-        for track in lf:
-            title_key = f"{track['artist']} - {track['title']}".lower().strip()
-            if title_key not in seen_titles:
-                # Спробуємо знайти на SoundCloud
-                sc_query = f"{track['artist']} {track['title']}"
-                sc_results = sc_search(sc_query, limit=3)
-                if sc_results:
-                    for sr in sc_results:
-                        if add_result(sr, "🎵"):
-                            break
-                else:
-                    # Додаємо placeholder з Last.fm
-                    add_result({
-                        "title": f"{track['artist']} - {track['title']}",
-                        "url": "",
-                        "id": "",
-                        "duration": "—",
-                        "channel": track["artist"],
-                        "source": "lastfm",
-                        "listeners": track.get("listeners", 0),
-                    }, "🔴")
-    except Exception as e:
-        logger.warning(f"Last.fm search error: {e}")
-
-    logger.info(f"Total search results for '{query}': {len(results)}")
+    logger.info(f"Track search '{query}': {len(results)} results (SC primary, SP fallback)")
     return results[:limit + 5]
-
-
-# ─── Пошук за жанром (Premium) ──────────────────────────────────────────────
-async def show_genres(msg, uid, ctx):
-    """Show genre selection keyboard."""
-    l = get_lang(uid)
-    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
-
-    kb = []
-    row = []
-    for key, name in genres.items():
-        row.append(InlineKeyboardButton(name, callback_data=f"genre|{key}"))
-        if len(row) == 2:
-            kb.append(row)
-            row = []
-    if row:
-        kb.append(row)
-
-    kb.append([back_btn(uid)])
-
-    text = {
-        "uk": "🎵 <b>Обери жанр:</b>",
-        "ru": "🎵 <b>Выбери жанр:</b>",
-        "en": "🎵 <b>Choose a genre:</b>",
-    }.get(l, "🎵 <b>Choose a genre:</b>")
-
-    try:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-async def search_by_genre(msg, genre_key, uid, ctx):
-    """Search popular tracks by genre."""
-    l = get_lang(uid)
-    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
-    genre_name = genres.get(genre_key, genre_key)
-
-    status = await msg.reply_text(
-        f"🔍 Шукаю <b>{genre_name}</b>…", parse_mode="HTML"
-    )
-
-    # Search queries for different genres
-    genre_queries = {
-        "pop": "popular pop music 2024",
-        "rock": "best rock music 2024",
-        "hiphop": "top hip hop rap 2024",
-        "electronic": "electronic dance music EDM 2024",
-        "jazz": "best jazz music",
-        "classical": "classical music masterpieces",
-        "metal": "heavy metal best songs",
-        "rnb": "R&B soul music 2024",
-        "country": "country music hits 2024",
-        "folk": "folk acoustic music",
-        "blues": "blues music classics",
-        "reggae": "reggae music best",
-        "latin": "latin pop reggaeton 2024",
-        "kpop": "K-pop hits 2024",
-        "indie": "indie music 2024",
-        "punk": "punk rock music",
-        "disco": "disco funk classics",
-        "funk": "funk music grooves",
-        "soul": "soul music classics",
-        "techno": "techno house music 2024",
-    }
-
-    query = genre_queries.get(genre_key, f"{genre_key} music 2024")
-    tracks = await async_search(query, limit=15)
-
-    if not tracks:
-        await status.edit_text("😔 Нічого не знайдено.")
-        return
-
-    await status.delete()
-
-    # Show results
-    ck = f"genre_{uid}_{genre_key}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
-    ctx.bot_data.setdefault("cache", {})[ck] = tracks
-
-    kb = []
-    for i, t in enumerate(tracks[:10]):
-        icon = t.get("source_icon", "🎵")
-        kb.append([
-            InlineKeyboardButton(
-                f"{icon} {t['title'][:40]} ({t['duration']})",
-                callback_data=f"dl|{i}|{ck}"
-            )
-        ])
-
-    kb.append([back_btn(uid)])
-
-    text = f"🎵 <b>{genre_name}</b> — знайдено {len(tracks)} треків:\n\nОбери пісню 👇"
-
-    try:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-
-def search_spotify_tracks(query, limit=5):
-    """Search tracks in Spotify."""
-    token = get_spotify_token()
-    if not token:
-        return []
-
-    import urllib.parse
-    encoded = urllib.parse.quote(query)
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"https://api.spotify.com/v1/search?q={encoded}&type=track&limit={limit}"
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        tracks = []
-        for item in data.get("tracks", {}).get("items", []):
-            artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
-            tracks.append({
-                "title": f"{artists} - {item.get('name', 'Unknown')}",
-                "url": item.get("external_urls", {}).get("spotify", ""),
-                "id": item.get("id", ""),
-                "duration": fmt_dur_ms(item.get("duration_ms", 0)),
-                "channel": artists,
-                "source": "spotify",
-                "spotify_id": item.get("id", ""),
-            })
-        return tracks
-    except Exception as e:
-        logger.error(f"Spotify track search error: {e}")
-        return []
-
 
 def artist_songs(artist, limit=50):
     """Search artist songs on SoundCloud + Deezer + Last.fm + Bandcamp."""
@@ -1770,14 +1567,8 @@ def artist_songs(artist, limit=50):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def find_track_for_download(track_name, artist_name):
-    """Find track URL for download. Chain: SoundCloud → Deezer → Spotify → Bandcamp → Last.fm (альтернативи)."""
-
-    queries = [
-        f"{artist_name} {track_name}",
-        f"{track_name} {artist_name}",
-        track_name,
-        artist_name,
-    ]
+    """Find track URL for download. Chain: SoundCloud -> Spotify -> Deezer -> Bandcamp -> VK -> Last.fm."""
+    queries = [f"{artist_name} {track_name}", f"{track_name} {artist_name}", track_name, artist_name]
 
     # 1. SoundCloud
     for query in queries:
@@ -1787,41 +1578,12 @@ def find_track_for_download(track_name, artist_name):
                 for r in result:
                     title_lower = r["title"].lower()
                     if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                        return {
-                            "title": r["title"],
-                            "url": r["url"],
-                            "source": "soundcloud",
-                        }
-                return {
-                    "title": result[0]["title"],
-                    "url": result[0]["url"],
-                    "source": "soundcloud",
-                }
+                        return {"title": r["title"], "url": r["url"], "source": "soundcloud"}
+                return {"title": result[0]["title"], "url": result[0]["url"], "source": "soundcloud"}
         except Exception as e:
             logger.warning(f"SC search failed for '{query}': {e}")
 
-    # 2. Deezer
-    for query in queries:
-        try:
-            dz = dz_search_tracks(query, limit=5)
-            if dz:
-                for d in dz:
-                    title_lower = d["title"].lower()
-                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                        return {
-                            "title": d["title"],
-                            "url": d["url"],
-                            "source": "deezer",
-                        }
-                return {
-                    "title": dz[0]["title"],
-                    "url": dz[0]["url"],
-                    "source": "deezer",
-                }
-        except Exception as e:
-            logger.warning(f"Deezer search failed for '{query}': {e}")
-
-    # 3. Spotify
+    # 2. Spotify
     if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
         for query in queries:
             try:
@@ -1830,18 +1592,23 @@ def find_track_for_download(track_name, artist_name):
                     for s in spotify:
                         title_lower = s["title"].lower()
                         if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                            return {
-                                "title": s["title"],
-                                "url": s["url"],
-                                "source": "spotify",
-                            }
-                    return {
-                        "title": spotify[0]["title"],
-                        "url": spotify[0]["url"],
-                        "source": "spotify",
-                    }
+                            return {"title": s["title"], "url": s["url"], "source": "spotify"}
+                    return {"title": spotify[0]["title"], "url": spotify[0]["url"], "source": "spotify"}
             except Exception as e:
                 logger.warning(f"Spotify search failed for '{query}': {e}")
+
+    # 3. Deezer
+    for query in queries:
+        try:
+            dz = dz_search_tracks(query, limit=5)
+            if dz:
+                for d in dz:
+                    title_lower = d["title"].lower()
+                    if track_name.lower() in title_lower or artist_name.lower() in title_lower:
+                        return {"title": d["title"], "url": d["url"], "source": "deezer"}
+                return {"title": dz[0]["title"], "url": dz[0]["url"], "source": "deezer"}
+        except Exception as e:
+            logger.warning(f"Deezer search failed for '{query}': {e}")
 
     # 4. Bandcamp
     for query in queries:
@@ -1852,23 +1619,14 @@ def find_track_for_download(track_name, artist_name):
                     if not b.get("is_album"):
                         title_lower = b["title"].lower()
                         if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                            return {
-                                "title": b["title"],
-                                "url": b["url"],
-                                "source": "bandcamp",
-                            }
-                # Перший трек з результатів
+                            return {"title": b["title"], "url": b["url"], "source": "bandcamp"}
                 for b in bc:
                     if not b.get("is_album"):
-                        return {
-                            "title": b["title"],
-                            "url": b["url"],
-                            "source": "bandcamp",
-                        }
+                        return {"title": b["title"], "url": b["url"], "source": "bandcamp"}
         except Exception as e:
             logger.warning(f"Bandcamp search failed for '{query}': {e}")
 
-    # 5. VK — російська/українська музика
+    # 5. VK
     for query in queries:
         try:
             vk = vk_search_tracks(query, limit=5)
@@ -1877,57 +1635,35 @@ def find_track_for_download(track_name, artist_name):
                     if v.get("url"):
                         title_lower = v["title"].lower()
                         if track_name.lower() in title_lower or artist_name.lower() in title_lower:
-                            return {
-                                "title": v["title"],
-                                "url": v["url"],
-                                "source": "vk",
-                            }
-                # Перший з результатів
+                            return {"title": v["title"], "url": v["url"], "source": "vk"}
                 if vk[0].get("url"):
-                    return {
-                        "title": vk[0]["title"],
-                        "url": vk[0]["url"],
-                        "source": "vk",
-                    }
+                    return {"title": vk[0]["title"], "url": vk[0]["url"], "source": "vk"}
         except Exception as e:
             logger.warning(f"VK search failed for '{query}': {e}")
 
-    # 6. Last.fm — шукаємо схожі треки або альтернативні назви
+    # 6. Last.fm similar tracks
     try:
         lf_similar = lastfm_get_similar_tracks(artist_name, track_name, limit=10)
         for sim in lf_similar:
-            sc_query = f"{sim['artist']} {sim['title']}"
-            sc_results = sc_search(sc_query, limit=3)
+            sc_results = sc_search(f"{sim['artist']} {sim['title']}", limit=3)
             if sc_results:
-                return {
-                    "title": f"{sim['artist']} - {sim['title']}",
-                    "url": sc_results[0]["url"],
-                    "source": "soundcloud",
-                    "note": f"Схожий трек (match: {sim.get('match', 0):.2f})",
-                }
+                return {"title": f"{sim['artist']} - {sim['title']}", "url": sc_results[0]["url"], "source": "soundcloud", "note": f"Similar track (match: {sim.get('match', 0):.2f})"}
     except Exception as e:
         logger.warning(f"Last.fm similar tracks failed: {e}")
 
-    # 6. Last.fm — пошук трека
+    # 7. Last.fm search
     try:
         lf_search = lastfm_search_track(f"{artist_name} {track_name}", limit=5)
         for lf_track in lf_search:
-            sc_query = f"{lf_track['artist']} {lf_track['title']}"
-            sc_results = sc_search(sc_query, limit=3)
+            sc_results = sc_search(f"{lf_track['artist']} {lf_track['title']}", limit=3)
             if sc_results:
-                return {
-                    "title": f"{lf_track['artist']} - {lf_track['title']}",
-                    "url": sc_results[0]["url"],
-                    "source": "soundcloud",
-                }
+                return {"title": f"{lf_track['artist']} - {lf_track['title']}", "url": sc_results[0]["url"], "source": "soundcloud"}
     except Exception as e:
         logger.warning(f"Last.fm track search failed: {e}")
 
     logger.error(f"Could not find track: {artist_name} - {track_name}")
     return None
 
-
-# ─── SPOTIFY: Робота з альбомами ──────────────────────────────────────────────
 def extract_spotify_album_id(text):
     text = text.strip()
     if "spotify.com/album/" in text:
@@ -2204,29 +1940,44 @@ async def async_lastfm_similar_tracks(artist, track, limit=10):
 
 # ─── Завантаження MP3 ─────────────────────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    """Download MP3 from SoundCloud, Deezer, Spotify, Bandcamp or any source."""
+    """Download MP3 from any source. Handles VK direct streams separately."""
 
+    # VK direct streams
+    if url and ("vkuseraudio" in url or "psv4.userapi.com" in url or ".vkusraudio" in url):
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": "https://vk.com/"}
+            resp = requests.get(url, headers=headers, timeout=30, stream=True)
+            resp.raise_for_status()
+            content_type = resp.headers.get('content-type', '')
+            ext = 'mp3' if 'mpeg' in content_type or 'mp3' in content_type else 'm4a' if 'm4a' in content_type or 'mp4' in content_type else 'mp3'
+            out_path = os.path.join(out_dir, f"vk_track.{ext}")
+            with open(out_path, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            if ext != 'mp3':
+                mp3_path = os.path.join(out_dir, "vk_track.mp3")
+                try:
+                    subprocess.run(["ffmpeg", "-i", out_path, "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{quality}k", "-y", mp3_path], check=True, capture_output=True, timeout=60)
+                    if os.path.exists(mp3_path):
+                        os.remove(out_path)
+                        return mp3_path
+                except Exception:
+                    pass
+            if os.path.exists(out_path):
+                return out_path
+        except Exception as e:
+            logger.warning(f"VK direct download failed: {e}")
+
+    # Standard yt-dlp
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": quality,
-            }
-        ],
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "socket_timeout": 30,
-        "retries": 3,
-        "fragment_retries": 3,
-        "file_access_retries": 3,
-        "extractor_retries": 3,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": quality}],
+        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "socket_timeout": 30, "retries": 3, "fragment_retries": 3,
+        "file_access_retries": 3, "extractor_retries": 3,
     }
-
-    # Add Deezer ARL cookie if available and URL is from Deezer
     if "deezer.com" in url:
         if DEEZER_ARL:
             base_opts["cookies"] = {"arl": DEEZER_ARL}
@@ -2234,7 +1985,6 @@ def download_mp3(url, out_dir, quality="192"):
         elif os.path.exists(DEEZER_COOKIES_FILE):
             base_opts["cookiesfrombrowser"] = ("firefox", None, None, DEEZER_COOKIES_FILE)
             logger.info("Using Deezer cookies file for download")
-
     try:
         with yt_dlp.YoutubeDL(base_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -2243,22 +1993,13 @@ def download_mp3(url, out_dir, quality="192"):
             if mp3_files:
                 logger.info(f"Download success: {mp3_files[0].name}")
                 return str(mp3_files[0])
-            # Конвертація якщо не mp3
             for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
                 files = list(Path(out_dir).glob(ext))
                 if files:
                     input_file = str(files[0])
                     output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
                     try:
-                        subprocess.run(
-                            [
-                                "ffmpeg",
-                                "-i", input_file,
-                                "-vn", "-ar", "44100", "-ac", "2",
-                                "-b:a", f"{quality}k", "-y", output_file,
-                            ],
-                            check=True, capture_output=True, timeout=60,
-                        )
+                        subprocess.run(["ffmpeg", "-i", input_file, "-vn", "-ar", "44100", "-ac", "2", "-b:a", f"{quality}k", "-y", output_file], check=True, capture_output=True, timeout=60)
                         if os.path.exists(output_file):
                             os.remove(input_file)
                             return output_file
@@ -2267,22 +2008,19 @@ def download_mp3(url, out_dir, quality="192"):
                         return input_file
     except Exception as e:
         logger.error(f"Download failed: {e}")
-        return None
+    return None
 
 async def async_download_with_fallback(url, out_dir, quality="192"):
-    """Download from direct URL. If fails (e.g. SoundCloud DRM), return None 
-    so caller can use aggregator fallback instead of retrying same source."""
+    """Download from URL. If fails, return None for aggregator fallback."""
     result = await async_download(url, out_dir, quality)
     if result:
         return result
-    # Don't retry with _alt_download — it will hit same DRM/region block.
+    # Do NOT retry with _alt_download - it hits same DRM/region block
     # Let do_download's aggregator fallback find alternative source (VK, etc.)
     logger.info(f"Direct download failed for {url}, will use aggregator fallback")
     return None
 
 def _alt_download(url, out_dir, quality="192"):
-    """DEPRECATED: Kept for compatibility but not used in fallback chain.
-    Use find_track_for_download + async_download instead for blocked URLs."""
     opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
@@ -3113,6 +2851,42 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Deezer album callbacks
+    if data.startswith("dz_album|"):
+        album_id = data.split("|", 1)[1]
+        await show_dz_album(q.message, album_id, uid, ctx)
+        return
+
+    if data.startswith("dz_track|"):
+        parts = data.split("|", 2)
+        album_ck = parts[1]
+        track_idx = int(parts[2])
+        album_data = ctx.bot_data.get("dz_album_cache", {}).get(album_ck)
+        if not album_data or track_idx >= len(album_data.get("tracks", [])):
+            await q.message.reply_text("❌ Дані альбому застаріли. Шукай знову.")
+            return
+        track = album_data["tracks"][track_idx]
+        status = await q.message.reply_text(f"🔍 Шукаю: <b>{track['name']}</b>…", parse_mode="HTML")
+        result = await async_find_track(track["name"], track["artists"])
+        if not result:
+            await status.edit_text(f"😔 Не знайдено: <b>{track['name']}</b>", parse_mode="HTML")
+            return
+        await status.delete()
+        await do_download(q.message, result["url"], track["name"], track["artists"], uid, ctx)
+        return
+
+    if data == "dz_albumzip":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        album_ck = ctx.bot_data.get("last_dz_album_ck", "")
+        album_data = ctx.bot_data.get("dz_album_cache", {}).get(album_ck)
+        if not album_data:
+            await q.message.reply_text("❌ Дані альбому застаріли.")
+            return
+        await do_download_dz_album_zip(q.message, album_data, uid, ctx)
+        return
+
     # Bandcamp album
     if data.startswith("bc_album|"):
         album_url = data.split("|", 1)[1]
@@ -3693,28 +3467,27 @@ async def show_spotify_album(msg, album_id, uid, ctx):
 
 # ─── Основна функція завантаження ────────────────────────────────────────────
 async def do_download(msg, url, title, artist, uid, ctx):
-    """Download track and send to user. With aggregator fallback.
+    """Download track with aggregator fallback.
 
     Flow:
-    1. Try direct download from provided URL
-    2. If fails (DRM, region block, dead link) → use find_track_for_download aggregator
-       which searches: SoundCloud → Deezer → Spotify → Bandcamp → VK → Last.fm
+    1. Try direct download from URL
+    2. If fails (DRM, dead link) -> use find_track_for_download aggregator
     3. Download from alternative source
     """
     l = get_lang(uid)
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
     txts = {
-        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло завантажити", "big": "😤 Завеликий файл", "fallback": "🔍 Шукаю альтернативне джерело...", "retry": "🔄 Джерело недоступне, шукаю інше..."},
-        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло скачать", "big": "😤 Слишком большой", "fallback": "🔍 Ищу альтернативный источник...", "retry": "🔄 Источник недоступен, ищу другой..."},
-        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Download failed", "big": "😤 Too big", "fallback": "🔍 Searching alternative source...", "retry": "🔄 Source unavailable, searching another..."},
-        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Échec du téléchargement", "big": "😤 Trop gros", "fallback": "🔍 Recherche source alternative...", "retry": "🔄 Source indisponible, recherche d'une autre..."},
+        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло завантажити", "big": "😤 Завеликий файл", "fallback": "🔍 Шукаю альтернативне джерело..."},
+        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло скачать", "big": "😤 Слишком большой", "fallback": "🔍 Ищу альтернативный источник..."},
+        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Download failed", "big": "😤 Too big", "fallback": "🔍 Searching alternative source..."},
+        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Échec du téléchargement", "big": "😤 Trop gros", "fallback": "🔍 Recherche source alternative..."},
     }
     t = txts.get(l, txts["en"])
 
     status = await msg.reply_text(t["search"], parse_mode="HTML")
 
-    # ─── Parse title/artist for aggregator ───
+    # Parse title/artist early for aggregator
     track_name = title
     artist_name = artist or ""
     if " - " in title and not artist_name:
@@ -3726,22 +3499,20 @@ async def do_download(msg, url, title, artist, uid, ctx):
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            # ─── STEP 1: Try direct download ───
+            # STEP 1: Try direct download
             path = None
             if url:
                 await status.edit_text(t["dl"], parse_mode="HTML")
                 path = await async_download_with_fallback(url, tmp, quality)
 
-            # ─── STEP 2: If direct fails → aggregator fallback ───
-            if not path or not os.path.exists(path):
+            # STEP 2: If direct fails -> aggregator fallback
+            if not path:
                 logger.info(f"Direct download failed for '{title}', using aggregator fallback...")
                 await status.edit_text(t["fallback"], parse_mode="HTML")
-
                 result = await async_find_track(track_name, artist_name)
                 if result and result.get("url"):
                     logger.info(f"Aggregator found: {result['title']} from {result['source']}")
-                    source_icon = {"soundcloud": "🎵", "deezer": "🟣", "spotify": "🟢", 
-                                   "bandcamp": "🟠", "vk": "🔵", "youtube": "🔴"}.get(result.get("source"), "🎵")
+                    source_icon = {"soundcloud": "🎵", "deezer": "🟣", "spotify": "🟢", "bandcamp": "🟠", "vk": "🔵", "youtube": "🔴"}.get(result.get("source"), "🎵")
                     await status.edit_text(f"{source_icon} Знайдено: {result['source']}! Завантажую...", parse_mode="HTML")
                     path = await async_download_with_fallback(result["url"], tmp, quality)
                     if result.get("title"):
@@ -3749,8 +3520,8 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 else:
                     logger.error(f"Aggregator failed for '{track_name}' by '{artist_name}'")
 
-            # ─── STEP 3: If still no path → error ───
-            if not path or not os.path.exists(path):
+            # STEP 3: If still no path -> error
+            if not path:
                 await status.edit_text(t["err"])
                 return
 
@@ -3774,12 +3545,7 @@ async def do_download(msg, url, title, artist, uid, ctx):
             add_listening_stat(uid, title, artist, 0, "download")
 
             url_id = cache_url(ctx.bot_data, url, title, artist)
-            add_txts = {
-                "uk": "📚 Додати в бібліотеку",
-                "ru": "📚 Добавить в библиотеку",
-                "en": "📚 Add to library",
-                "fr": "📚 Ajouter à la bibliothèque",
-            }
+            add_txts = {"uk": "📚 Додати в бібліотеку", "ru": "📚 Добавить в библиотеку", "en": "📚 Add to library", "fr": "📚 Ajouter à la bibliothèque"}
             add_txt = add_txts.get(l, add_txts["en"])
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
@@ -3792,8 +3558,46 @@ async def do_download(msg, url, title, artist, uid, ctx):
             await status.edit_text(t["err"])
 
 
-
 # ─── ZIP завантаження для альбомів ────────────────────────────────────────────
+async def do_download_dz_album_zip(msg, album_data, uid, ctx):
+    """Download Deezer album as ZIP."""
+    l = get_lang(uid)
+    status = await msg.reply_text(f"⬇️ Завантажую альбом з Deezer: <b>{escape_html(album_data['name'])}</b>…", parse_mode="HTML")
+    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
+    tracks_with_url = []
+    for i, track in enumerate(album_data["tracks"]):
+        if track.get("url"):
+            tracks_with_url.append({"title": f"{track['artists']} — {track['name']}", "url": track["url"]})
+        else:
+            result = await async_find_track(track["name"], track["artists"])
+            if result:
+                tracks_with_url.append({"title": f"{track['artists']} — {track['name']}", "url": result["url"]})
+        await asyncio.sleep(0.2)
+    if not tracks_with_url:
+        await status.edit_text("😔 Не знайдено жодного трека.")
+        return
+    await status.edit_text(f"⬇️ Завантажую {len(tracks_with_url)} треків…")
+    tmp_dir = tempfile.mkdtemp()
+    zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+    if not zip_path:
+        await status.edit_text("❌ Помилка створення архіву.")
+        return
+    size_mb = os.path.getsize(zip_path) / 1024 / 1024
+    if size_mb > 2000:
+        await status.edit_text(f"❌ Архів завеликий ({size_mb:.1f} МБ).")
+        return
+    await status.edit_text("📤 Відправляю ZIP…")
+    safe_name = f"{album_data['artist']} - {album_data['name']}"[:50]
+    await msg.reply_document(
+        document=open(zip_path, 'rb'),
+        filename=f"{safe_name}.zip",
+        caption=f"💿 <b>{escape_html(album_data['name'])}</b>\n🎤 {escape_html(album_data['artist'])}\n📦 {len(tracks_with_url)} треків\n🟣 Deezer",
+        parse_mode="HTML"
+    )
+    await status.delete()
+    os.unlink(zip_path)
+
+
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
     """Download Spotify album as ZIP."""
     l = get_lang(uid)
@@ -4088,10 +3892,10 @@ async def do_zip_album_search(update, query, uid, ctx):
 
     await msg.edit_text(
         "📦 <b>Обери альбом для ZIP:</b>" + chr(10) + chr(10) +
-        "🟢 — Spotify (спотіфай)" + chr(10) +
-        "🔴 — MusicBrainz (інфа про альбом)" + chr(10) +
-        "🟠 — Bandcamp (джерело запасне )" + chr(10) +
-        "🔵 — VK (ремікси, забанені)",
+        "🟢 — Spotify (краща якість метаданих)" + chr(10) +
+        "🔴 — MusicBrainz (більше незалежної музики)" + chr(10) +
+        "🟠 — Bandcamp (інді/андерграунд)" + chr(10) +
+        "🔵 — VK (російська/українська, ремікси, забанені)",
         reply_markup=InlineKeyboardMarkup(kb),
         parse_mode="HTML"
     )
