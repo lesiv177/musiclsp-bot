@@ -1898,6 +1898,14 @@ async def async_download(url, out_dir, quality="192"):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, download_mp3, url, out_dir, quality)
 
+async def async_download_with_fallback(url, out_dir, quality="192"):
+    """Download from URL. If fails, return None for aggregator fallback."""
+    result = await async_download(url, out_dir, quality)
+    if result:
+        return result
+    logger.info(f"Direct download failed for {url}, will use aggregator fallback")
+    return None
+
 async def async_spotify_album_info(album_id):
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, get_spotify_album_info, album_id)
@@ -1940,7 +1948,7 @@ async def async_lastfm_similar_tracks(artist, track, limit=10):
 
 # ─── Завантаження MP3 ─────────────────────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
-    """Download MP3 from any source. Handles VK direct streams separately."""
+    """Download MP3 from any source. ffmpeg is required."""
 
     # VK direct streams
     if url and ("vkuseraudio" in url or "psv4.userapi.com" in url or ".vkusraudio" in url):
@@ -1969,7 +1977,7 @@ def download_mp3(url, out_dir, quality="192"):
         except Exception as e:
             logger.warning(f"VK direct download failed: {e}")
 
-    # Standard yt-dlp
+    # Standard yt-dlp with ffmpeg
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
         "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
@@ -2010,7 +2018,7 @@ def download_mp3(url, out_dir, quality="192"):
         logger.error(f"Download failed: {e}")
     return None
 
-async def async_download_with_fallback(url, out_dir, quality="192"):
+def async_download_with_fallback(url, out_dir, quality="192"):
     """Download from URL. If fails, return None for aggregator fallback."""
     result = await async_download(url, out_dir, quality)
     if result:
@@ -2419,6 +2427,24 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
             return
         await show_genres(q.message, uid, ctx)
+        return
+
+    if data == "m:ai_recommend":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        set_state(uid, "ai_recommend_input")
+        prompts = {"uk": "🤖 Введи артиста або пісню для схожої музики:", "ru": "🤖 Введи артиста или песню для похожей музыки:", "en": "🤖 Enter artist or song for similar music:", "fr": "🤖 Entre un artiste ou une chanson pour de la musique similaire:"}
+        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        return
+
+    if data == "m:radio":
+        if not is_premium(uid):
+            await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        set_state(uid, "radio_input")
+        prompts = {"uk": "📻 Введи артиста або пісню для радіо:", "ru": "📻 Введи артиста или песню для радио:", "en": "📻 Enter artist or song for radio:", "fr": "📻 Entre un artiste ou une chanson pour la radio:"}
+        await q.message.edit_text(prompts.get(l, prompts["en"]), reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
         return
 
     if data.startswith("genre|"):
@@ -2956,6 +2982,22 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await do_download_vk_album_zip(q.message, album_data, uid, ctx)
         return
 
+    if data.startswith("radio_next|"):
+        rid = int(data.split("|")[1])
+        session, tracks = get_radio_session(rid)
+        if not session:
+            return
+        idx = session["current_idx"] + 1
+        if idx >= len(tracks):
+            await q.message.reply_text("📻 Радіо сесія закінчилась. Почни нову!")
+            return
+        update_radio_idx(rid, idx)
+        track = tracks[idx]
+        await do_download(q.message, track["url"], track["title"], track.get("artist", ""), uid, ctx)
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Наступна", callback_data=f"radio_next|{rid}"), back_btn(uid)]])
+        await q.message.reply_text(f"📻 Радіо: {idx+1}/{len(tracks)}", reply_markup=kb, parse_mode="HTML")
+        return
+
 # ─── Повідомлення ─────────────────────────────────────────────────────────────
 async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -2975,6 +3017,22 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
             return
         await show_artist(update.message, text, uid, ctx, max_songs)
+        return
+
+    if state == "radio_input":
+        set_state(uid, "")
+        if not is_premium(uid):
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        await start_radio(update.message, text, uid, ctx)
+        return
+
+    if state == "ai_recommend_input":
+        set_state(uid, "")
+        if not is_premium(uid):
+            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
+            return
+        await ai_recommend(update.message, text, uid, ctx)
         return
 
     # Batch download
@@ -3008,23 +3066,7 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     # Radio
-    if state == "radio_input":
-        set_state(uid, "")
-        if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
-            return
-        await start_radio(update.message, text, uid, ctx)
-        return
-
     # AI Recommend
-    if state == "ai_recommend_input":
-        set_state(uid, "")
-        if not is_premium(uid):
-            await update.message.reply_text(tx("premium_only", l), parse_mode="HTML")
-            return
-        await ai_recommend(update.message, text, uid, ctx)
-        return
-
     # Playlist create
     if state == "playlist_create":
         set_state(uid, "")
@@ -3551,11 +3593,15 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            await msg.reply_text("", reply_markup=kb)
+            await msg.reply_text("✅", reply_markup=kb)
+            return  # <-- RETURN after success to avoid falling through to error
 
         except Exception as e:
             logger.error(f"Download error: {e}")
-            await status.edit_text(t["err"])
+            try:
+                await status.edit_text(t["err"])
+            except Exception:
+                pass
 
 
 # ─── ZIP завантаження для альбомів ────────────────────────────────────────────
@@ -3902,6 +3948,175 @@ async def do_zip_album_search(update, query, uid, ctx):
 
 
 # ─── Всі пісні артиста ────────────────────────────────────────────────────────
+async def show_genres(msg, uid, ctx):
+    l = get_lang(uid)
+    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
+    kb = []
+    row = []
+    for key, name in genres.items():
+        row.append(InlineKeyboardButton(name, callback_data=f"genre|{key}"))
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+    kb.append([back_btn(uid)])
+    text = {"uk": "🎵 <b>Обери жанр:</b>", "ru": "🎵 <b>Выбери жанр:</b>", "en": "🎵 <b>Choose a genre:</b>"}.get(l, "🎵 <b>Choose a genre:</b>")
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+
+async def search_by_genre(msg, genre_key, uid, ctx):
+    l = get_lang(uid)
+    genres = MUSIC_GENRES.get(l, MUSIC_GENRES["en"])
+    genre_name = genres.get(genre_key, genre_key)
+    status = await msg.reply_text(f"🔍 Шукаю <b>{genre_name}</b>…", parse_mode="HTML")
+    genre_queries = {"pop": "popular pop music 2024", "rock": "best rock music 2024", "hiphop": "top hip hop rap 2024", "electronic": "electronic dance music EDM 2024", "jazz": "best jazz music", "classical": "classical music masterpieces", "metal": "heavy metal best songs", "rnb": "R&B soul music 2024", "country": "country music hits 2024", "folk": "folk acoustic music", "blues": "blues music classics", "reggae": "reggae music best", "latin": "latin pop reggaeton 2024", "kpop": "K-pop hits 2024", "indie": "indie music 2024", "punk": "punk rock music", "disco": "disco funk classics", "funk": "funk music grooves", "soul": "soul music classics", "techno": "techno house music 2024"}
+    query = genre_queries.get(genre_key, f"{genre_key} music 2024")
+    tracks = await async_search(query, limit=15)
+    if not tracks:
+        await status.edit_text("😔 Нічого не знайдено.")
+        return
+    await status.delete()
+    ck = f"genre_{uid}_{genre_key}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
+    ctx.bot_data.setdefault("cache", {})[ck] = tracks
+    kb = []
+    for i, t in enumerate(tracks[:10]):
+        icon = t.get("source_icon", "🎵")
+        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
+    kb.append([back_btn(uid)])
+    text = f"🎵 <b>{genre_name}</b> — знайдено {len(tracks)} треків:\n\nОбери пісню 👇"
+    try:
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+
+async def ai_recommend(msg, query, uid, ctx):
+    """AI-powered music recommendation using Last.fm similar artists/tracks."""
+    l = get_lang(uid)
+    status = await msg.reply_text(f"🤖 Аналізую <b>{query}</b>…", parse_mode="HTML")
+
+    # Try to find similar artists
+    similar_artists = await async_lastfm_similar_artists(query, limit=10)
+    if not similar_artists:
+        # Try as track
+        parts = query.split(" - ", 1)
+        artist = parts[0].strip() if len(parts) > 1 else query
+        track = parts[1].strip() if len(parts) > 1 else ""
+        similar_tracks = await async_lastfm_similar_tracks(artist, track, limit=10)
+        if not similar_tracks:
+            await status.edit_text("😔 Не знайдено схожої музики.")
+            return
+        # Search similar tracks
+        tracks = []
+        seen = set()
+        for st in similar_tracks[:5]:
+            results = await async_search(f"{st['artist']} {st['title']}", limit=3)
+            for r in results:
+                if r['title'] not in seen:
+                    seen.add(r['title'])
+                    tracks.append(r)
+            await asyncio.sleep(0.2)
+        if not tracks:
+            await status.edit_text("😔 Не знайдено схожої музики.")
+            return
+        await status.delete()
+        ck = f"ai_{uid}_{msg.message_id}"
+        ctx.bot_data.setdefault("cache", {})[ck] = tracks
+        kb = []
+        for i, t in enumerate(tracks[:10]):
+            icon = t.get("source_icon", "🎵")
+            kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
+        kb.append([back_btn(uid)])
+        text = f"🤖 <b>Схоже на:</b> {escape_html(query)}\n\nОбери пісню 👇"
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+        return
+
+    # Search tracks from similar artists
+    tracks = []
+    seen = set()
+    for artist in similar_artists[:5]:
+        results = await async_search(artist, limit=5)
+        for r in results:
+            if r['title'] not in seen:
+                seen.add(r['title'])
+                tracks.append(r)
+        await asyncio.sleep(0.2)
+
+    if not tracks:
+        await status.edit_text("😔 Не знайдено схожої музики.")
+        return
+
+    await status.delete()
+    ck = f"ai_{uid}_{msg.message_id}"
+    ctx.bot_data.setdefault("cache", {})[ck] = tracks
+    kb = []
+    for i, t in enumerate(tracks[:10]):
+        icon = t.get("source_icon", "🎵")
+        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
+    kb.append([back_btn(uid)])
+    text = f"🤖 <b>Схожі на:</b> {escape_html(query)}\n\nОбери пісню 👇"
+    await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+
+
+async def start_radio(msg, query, uid, ctx):
+    """Start radio session based on artist or track."""
+    l = get_lang(uid)
+    status = await msg.reply_text(f"📻 Готую радіо для <b>{query}</b>…", parse_mode="HTML")
+
+    parts = query.split(" - ", 1)
+    artist = parts[0].strip() if len(parts) > 1 else query
+    track = parts[1].strip() if len(parts) > 1 else ""
+
+    # Get similar tracks
+    similar = await async_lastfm_similar_tracks(artist, track, limit=20) if track else []
+    if not similar:
+        similar_artists = await async_lastfm_similar_artists(artist, limit=10)
+        similar = []
+        for sa in similar_artists[:5]:
+            top = lastfm_get_artist_top_tracks(sa, limit=4)
+            similar.extend(top)
+
+    if not similar:
+        await status.edit_text("😔 Не знайдено треків для радіо.")
+        return
+
+    # Build track list with URLs
+    tracks = []
+    seen = set()
+    for sim in similar[:15]:
+        title = f"{sim['artist']} - {sim['title']}"
+        if title in seen:
+            continue
+        seen.add(title)
+        result = await async_find_track(sim['title'], sim['artist'])
+        if result:
+            tracks.append({"title": title, "artist": sim['artist'], "url": result['url']})
+        await asyncio.sleep(0.2)
+
+    if not tracks:
+        await status.edit_text("😔 Не знайдено треків для радіо.")
+        return
+
+    # Create session
+    rid = create_radio_session(uid, artist, track, tracks)
+
+    await status.delete()
+
+    # Play first track
+    first = tracks[0]
+    await do_download(msg, first['url'], first['title'], first['artist'], uid, ctx)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏭ Наступна", callback_data=f"radio_next|{rid}")],
+        [back_btn(uid)]
+    ])
+    await msg.reply_text(f"📻 Радіо: 1/{len(tracks)}\n🎵 <b>{escape_html(first['title'])}</b>", reply_markup=kb, parse_mode="HTML")
+
+
 async def show_artist(msg, artist, uid, ctx, max_songs=10):
     """Show all songs by artist."""
     l = get_lang(uid)
@@ -3942,45 +4157,6 @@ async def show_artist(msg, artist, uid, ctx, max_songs=10):
 
 
 # ─── Batch download — з затримкою для rate limit ──────────────────────────────
-async def batch_download(msg, artist, uid, ctx, size=20):
-    status = await msg.reply_text(
-        f"⬇️ Завантажую {size} пісень <b>{artist}</b>…\n<i>Кілька хвилин</i>",
-        parse_mode="HTML"
-    )
-    tracks = await async_artist(artist, size)
-    if not tracks:
-        await status.edit_text("😔 Нічого не знайдено.")
-        return
-    quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
-    ok = 0
-    for i, t in enumerate(tracks):
-        if i >= size:
-            break
-        await status.edit_text(
-            f"⬇️ {i+1}/{size}: <b>{t['title'][:40]}</b>…", parse_mode="HTML"
-        )
-        with tempfile.TemporaryDirectory() as tmp:
-            try:
-                path = await async_download_with_fallback(t["url"], tmp, quality)
-                if path and os.path.exists(path) and os.path.getsize(path) / 1024 / 1024 <= MAX_MB:
-                    with open(path, "rb") as f:
-                        await msg.reply_audio(
-                            audio=f,
-                            title=t["title"][:64],
-                            performer=t["channel"][:64],
-                            filename=f"{t['title'][:50]}.mp3"
-                        )
-                    add_history(uid, t["title"], t["channel"])
-                    add_listening_stat(uid, t["title"], t["channel"], 0, "batch")
-                    ok += 1
-                    # Rate limit: max 20 msg/min per chat
-                    await asyncio.sleep(3)
-            except Exception as e:
-                logger.error(f"Batch: {e}")
-    await status.edit_text(f"✅ Завантажено {ok} з {len(tracks)} пісень!")
-
-
-# ─── Бібліотека ───────────────────────────────────────────────────────────────
 async def show_library(msg, uid, ctx):
     """Show user library."""
     songs = get_library(uid)
@@ -4130,29 +4306,6 @@ async def show_sub(msg, uid, ctx=None):
             logger.error(f"show_sub reply_text also failed: {e2}")
 
 # ─── Реферал ──────────────────────────────────────────────────────────────────
-async def show_ref(msg, uid, ctx):
-    """Show referral link."""
-    l = get_lang(uid)
-    bot_info = await ctx.bot.get_me()
-    link = f"https://t.me/{bot_info.username}?start={uid}"
-
-    texts = {
-        "uk": {"title": "🎁 Запроси друга", "desc": "Поділись посиланням — допоможи боту рости 🚀", "link": "🔗 Твоє посилання"},
-        "ru": {"title": "🎁 Пригласи друга", "desc": "Поделись ссылкой — помоги боту расти 🚀", "link": "🔗 Твоя ссылка"},
-        "en": {"title": "🎁 Invite a friend", "desc": "Share the link — help the bot grow 🚀", "link": "🔗 Your link"},
-        "fr": {"title": "🎁 Invite un ami", "desc": "Partage le lien — aide le bot à grandir 🚀", "link": "🔗 Ton lien"},
-    }
-    t = texts.get(l, texts["en"])
-
-    text = f"{t['title']}\n\n{t['desc']}\n\n{t['link']}:\n<code>{link}</code>"
-    kb = InlineKeyboardMarkup([[back_btn(uid)]])
-    try:
-        await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
-
-
-# ─── Налаштування ─────────────────────────────────────────────────────────────
 async def show_settings(msg, uid, ctx):
     """Show settings menu."""
     l = get_lang(uid)
@@ -4255,243 +4408,3 @@ async def show_playlist(msg, pid, uid, ctx):
 
 
 # ─── Радіо — ПОКРАЩЕНИЙ з Last.fm ────────────────────────────────────────────
-async def start_radio(msg, seed, uid, ctx):
-    status = await msg.reply_text(
-        f"📻 Створюю радіо на основі <b>{seed}</b>…", parse_mode="HTML"
-    )
-
-    # 1. Шукаємо seed треки
-    seed_tracks = await async_search(seed, limit=5)
-    if not seed_tracks:
-        await status.edit_text("😔 Не вдалося створити радіо. Спробуй інший запит.")
-        return
-
-    radio_tracks = []
-    seed_artist = seed_tracks[0].get("channel", seed)
-
-    # 2. Last.fm — схожі артисти
-    try:
-        similar_artists = await async_lastfm_similar_artists(seed_artist, limit=10)
-        for sim_artist in similar_artists[:5]:
-            sim_tracks = await async_artist(sim_artist, 5)
-            radio_tracks.extend(sim_tracks)
-    except Exception as e:
-        logger.warning(f"Last.fm radio failed: {e}")
-
-    # 3. Схожі треки з SoundCloud
-    similar = await async_artist(seed_artist, 10)
-    radio_tracks.extend(similar)
-
-    # 4. Random popular tracks
-    random_tracks = await async_search("popular music 2024", limit=10)
-    radio_tracks.extend(random_tracks)
-
-    # 5. Last.fm — схожі треки для seed
-    try:
-        if seed_tracks and seed_tracks[0].get("channel") and seed_tracks[0].get("title"):
-            lf_similar = await async_lastfm_similar_tracks(
-                seed_tracks[0]["channel"],
-                seed_tracks[0]["title"].replace(f"{seed_tracks[0]['channel']} - ", ""),
-                limit=10
-            )
-            for sim in lf_similar:
-                sc_query = f"{sim['artist']} {sim['title']}"
-                sc_results = await async_search(sc_query, limit=3)
-                radio_tracks.extend(sc_results)
-    except Exception as e:
-        logger.warning(f"Last.fm similar tracks radio failed: {e}")
-
-    random.shuffle(radio_tracks)
-    radio_tracks = radio_tracks[:30]
-
-    if not radio_tracks:
-        await status.edit_text("😔 Не вдалося створити радіо.")
-        return
-
-    rid = create_radio_session(uid, seed, seed_tracks[0]["title"] if seed_tracks else seed, radio_tracks)
-
-    await status.delete()
-
-    first = radio_tracks[0]
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏭ Наступна", callback_data=f"radio_next|{rid}")],
-        [back_btn(uid)]
-    ])
-
-    await msg.reply_text(
-        f"📻 <b>Радіо:</b> {seed}\n\n"
-        f"🎵 <b>Зараз грає:</b> {first['title']}\n"
-        f"👤 {first.get('channel', '—')}\n"
-        f"⏱ {first['duration']}\n\n"
-        f"📊 В черзі: {len(radio_tracks)} треків\n"
-        f"<i>Powered by Last.fm + SoundCloud</i>",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
-
-    await do_download(msg, first["url"], first["title"], first.get("channel", ""), uid, ctx)
-
-
-# ─── Статистика прослуховування ───────────────────────────────────────────────
-async def show_stats(msg, uid):
-    l = get_lang(uid)
-    s7 = get_listening_stats(uid, 7)
-    s30 = get_listening_stats(uid, 30)
-    txts = {
-        "uk": {"t": "📊 Статистика", "d7": "📅 7 днів", "d30": "📅 30 днів", "tr": "🎵 Треків", "ta": "🎤 Топ артисти", "tt": "🎵 Топ треки", "tm": "разів"},
-        "ru": {"t": "📊 Статистика", "d7": "📅 7 дней", "d30": "📅 30 дней", "tr": "🎵 Треков", "ta": "🎤 Топ артисты", "tt": "🎵 Топ треки", "tm": "раз"},
-        "en": {"t": "📊 Statistics", "d7": "📅 7 days", "d30": "📅 30 days", "tr": "🎵 Tracks", "ta": "🎤 Top artists", "tt": "🎵 Top tracks", "tm": "times"},
-        "fr": {"t": "📊 Statistiques", "d7": "📅 7 jours", "d30": "📅 30 jours", "tr": "🎵 Morceaux", "ta": "🎤 Top artistes", "tt": "🎵 Top morceaux", "tm": "fois"},
-    }
-    t = txts.get(l, txts["en"])
-    nl = chr(10)
-    txt = t["t"] + nl + nl
-    txt += t["d7"] + ":" + nl + "  * " + t["tr"] + ": <b>" + str(s7["total"]) + "</b>" + nl + nl
-    txt += t["d30"] + ":" + nl + "  * " + t["tr"] + ": <b>" + str(s30["total"]) + "</b>" + nl + nl
-    if s30["top_artists"]:
-        txt += t["ta"] + ":" + nl
-        for i, (a, c) in enumerate(s30["top_artists"][:5], 1):
-            txt += "  " + str(i) + ". <b>" + str(a) + "</b> - " + str(c) + " " + t["tm"] + nl
-        txt += nl
-    if s30["top_tracks"]:
-        txt += t["tt"] + ":" + nl
-        for i, (ti, a, c) in enumerate(s30["top_tracks"][:5], 1):
-            txt += "  " + str(i) + ". <b>" + str(ti) + "</b> - " + str(a) + " (" + str(c) + " " + t["tm"] + ")" + nl
-    kb = InlineKeyboardMarkup([[back_btn(uid)]])
-    try:
-        await msg.edit_text(txt[:4096], reply_markup=kb, parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(txt[:4096], reply_markup=kb, parse_mode="HTML")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ПОКРАЩЕНА СХОЖА МУЗИКА — Last.fm artist.getSimilar
-# ═══════════════════════════════════════════════════════════════════════════════
-async def ai_recommend(msg, query, uid, ctx):
-    """Find similar music based on artist or genre using Last.fm."""
-    l = get_lang(uid)
-    status = await msg.reply_text(f"🤖 Шукаю схожу музику для <b>{query}</b>…\n<i>Last.fm + SoundCloud + Bandcamp</i>", parse_mode="HTML")
-
-    # 1. Шукаємо seed треки
-    seed_tracks = await async_search(query, limit=5)
-    if not seed_tracks:
-        await status.edit_text("😔 Не знайдено базовий трек. Спробуй інший запит.")
-        return
-
-    seed_artist = seed_tracks[0].get("channel", query)
-    similar = []
-    seen = set()
-
-    # 2. Last.fm — схожі артисти (ГОЛОВНЕ)
-    try:
-        similar_artists = await async_lastfm_similar_artists(seed_artist, limit=15)
-        for sim_artist in similar_artists:
-            # Шукаємо треки схожого артиста
-            sim_tracks = await async_artist(sim_artist, limit=5)
-            for t in sim_tracks:
-                if t["url"] not in seen:
-                    seen.add(t["url"])
-                    t["source_icon"] = "🎵"
-                    similar.append(t)
-            # Також шукаємо на Bandcamp
-            try:
-                bc = bandcamp_search(sim_artist, limit=3)
-                for b in bc:
-                    if not b.get("is_album") and b["url"] not in seen:
-                        seen.add(b["url"])
-                        b["duration"] = "—"
-                        b["channel"] = b.get("artist", "Bandcamp")
-                        b["source_icon"] = "🟠"
-                        similar.append(b)
-            except Exception:
-                pass
-    except Exception as e:
-        logger.warning(f"Last.fm similar artists failed: {e}")
-
-    # 3. Last.fm — схожі треки
-    try:
-        if seed_tracks[0].get("channel") and seed_tracks[0].get("title"):
-            track_title = seed_tracks[0]["title"].replace(f"{seed_tracks[0]['channel']} - ", "")
-            lf_similar = await async_lastfm_similar_tracks(seed_artist, track_title, limit=10)
-            for sim in lf_similar:
-                sc_query = f"{sim['artist']} {sim['title']}"
-                sc_results = await async_search(sc_query, limit=3)
-                for t in sc_results:
-                    if t["url"] not in seen:
-                        seen.add(t["url"])
-                        t["source_icon"] = "🎵"
-                        similar.append(t)
-    except Exception as e:
-        logger.warning(f"Last.fm similar tracks failed: {e}")
-
-    # 4. Додаємо треки самого артиста (як резерв)
-    artist_tracks = await async_artist(seed_artist, limit=10)
-    for t in artist_tracks:
-        if t["url"] not in seen:
-            seen.add(t["url"])
-            t["source_icon"] = "🎵"
-            similar.append(t)
-
-    # 5. Додаємо треки з пошуку "similar to"
-    related_queries = [f"similar to {seed_artist}", f"like {seed_artist}", f"artists similar to {seed_artist}"]
-    for rq in related_queries:
-        try:
-            extra = await async_search(rq, limit=5)
-            for t in extra:
-                if t["url"] not in seen:
-                    seen.add(t["url"])
-                    t["source_icon"] = "🎵"
-                    similar.append(t)
-        except Exception:
-            pass
-
-    if not similar:
-        await status.edit_text("😔 Не знайдено схожої музики.")
-        return
-
-    await status.delete()
-    ck = f"ai_{uid}_{query}_{msg.message_id if hasattr(msg, 'message_id') else 0}"
-    ctx.bot_data.setdefault("cache", {})[ck] = similar
-
-    kb = []
-    for i, t in enumerate(similar[:10]):
-        icon = t.get("source_icon", "🎵")
-        kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
-    kb.append([back_btn(uid)])
-
-    text = (
-        f"🤖 <b>Схожа музика для:</b> {query}\n"
-        f"🎤 <b>Базовий артист:</b> {seed_artist}\n"
-        f"<i>Powered by Last.fm</i>\n\n"
-        f"Знайдено {len(similar)} треків:\n\n"
-        f"Обери пісню 👇"
-    )
-    try:
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-    except Exception:
-        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def main():
-    init_db()
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # Хендлери команд
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("admin", cmd_admin))
-
-    # Хендлери callback
-    app.add_handler(CallbackQueryHandler(on_callback))
-
-    # Хендлери повідомлень
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-
-    logger.info("🚀 MusicLSP v3.3 запускається...")
-    app.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
