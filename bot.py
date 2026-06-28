@@ -1,9 +1,3 @@
-# 📦 ЧАСТИНА 1 з 2
-
-Збережи файл як `bot.py`. **НЕ копіюй** — копіюй вміст, який йде далі.
-
-```python
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 MusicLSP v3.2 — Deezer + SoundCloud + Spotify + MusicBrainz
