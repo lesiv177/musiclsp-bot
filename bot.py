@@ -28,12 +28,23 @@ from pathlib import Path
 from contextlib import closing
 
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 import yt_dlp
+
+# ─── Web App плеєр ────────────────────────────────────────────────────────────
+WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://your-username.github.io/musiclsp-player")
+
+# ─── AIOHTTP для API плеєра ─────────────────────────────────────────────────
+try:
+    from aiohttp import web
+    AIOHTTP_AVAILABLE = True
+except ImportError:
+    AIOHTTP_AVAILABLE = False
+    logger.warning("aiohttp not installed — Web App API disabled")
 
 # ─── Логування ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -2442,6 +2453,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pid = int(data.split("|")[1])
         await show_playlist(q.message, pid, uid, ctx)
         return
+    if data.startswith("pl_player|"):
+        pid = int(data.split("|")[1])
+        await open_player(q.message, pid, uid, ctx)
+        return
     if data.startswith("pl_del|"):
         pid = int(data.split("|")[1])
         delete_playlist(uid, pid)
@@ -3127,6 +3142,17 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 await status.edit_text(t["big"])
                 return
             await status.edit_text(t["send"], parse_mode="HTML")
+            with open(path, "rb") as f:
+                await msg.reply_audio(
+                    audio=f,
+                    title=title[:64],
+                    performer=artist[:64],
+                    filename=f"{title[:50]}.mp3"
+                )
+            await status.edit_text(t["done"])
+            add_history(uid, title, artist)
+            add_listening_stat(uid, title, artist, 0, "download")
+
             url_id = cache_url(ctx.bot_data, url, title, artist)
             add_txts = {
                 "uk": "📚 Додати в бібліотеку",
@@ -3135,21 +3161,11 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 "fr": "📚 Ajouter à la bibliothèque",
             }
             add_txt = add_txts.get(l, add_txts["en"])
-            audio_kb = InlineKeyboardMarkup([
+            kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            with open(path, "rb") as f:
-                await msg.reply_audio(
-                    audio=f,
-                    title=title[:64],
-                    performer=artist[:64],
-                    filename=f"{title[:50]}.mp3",
-                    reply_markup=audio_kb
-                )
-            await status.edit_text(t["done"])
-            add_history(uid, title, artist)
-            add_listening_stat(uid, title, artist, 0, "download")
+            await msg.reply_text("", reply_markup=kb)
         except Exception as e:
             logger.error(f"Download error: {e}")
             await status.edit_text(t["err"])
@@ -3696,6 +3712,7 @@ async def show_playlist(msg, pid, uid, ctx):
         ])
 
     kb.append([InlineKeyboardButton("➕ Додати трек", callback_data=f"pl_addtrack|{pid}")])
+    kb.append([InlineKeyboardButton("🎵 Відкрити плеєр", callback_data=f"pl_player|{pid}")])
     kb.append([back_btn(uid)])
     try:
         await msg.edit_text(text[:4096], reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
@@ -3866,11 +3883,137 @@ async def get_lyrics(msg, query, uid):
 #  MAIN
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def main():
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  WEB APP API (для плеєра)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def api_playlist(request):
+    """API: повертає JSON з треками плейлиста для Web App плеєра."""
+    try:
+        playlist_id = int(request.match_info.get("playlist_id", "0"))
+        user_id = int(request.query.get("user", "0"))
+
+        # Перевіряємо чи плейлист належить користувачу
+        pl, tracks = get_playlist(playlist_id)
+        if not pl:
+            return web.json_response({"error": "Playlist not found"}, status=404)
+
+        # Отримуємо дані плейлиста
+        pl_name = pl.get("name", "Плейлист") if isinstance(pl, dict) else pl["name"]
+
+        # Формуємо треки з URL для відтворення
+        track_list = []
+        for t in tracks:
+            title = t.get("title", "—") if isinstance(t, dict) else t["title"]
+            artist = t.get("artist", "—") if isinstance(t, dict) else t["artist"]
+            url = t.get("url", "") if isinstance(t, dict) else t["url"]
+            duration = t.get("duration", "—") if isinstance(t, dict) else t["duration"]
+
+            # Шукаємо пряме MP3-посилання для відтворення
+            audio_url = None
+            if url:
+                try:
+                    # Спробуємо отримати пряме посилання через yt-dlp
+                    opts = {"quiet": True, "no_warnings": True, "format": "bestaudio/best"}
+                    with yt_dlp.YoutubeDL(opts) as ydl:
+                        info = ydl.extract_info(url, download=False)
+                        if info:
+                            audio_url = info.get("url") or info.get("formats", [{}])[0].get("url")
+                except Exception:
+                    pass
+
+            track_list.append({
+                "title": title,
+                "artist": artist,
+                "duration": duration,
+                "url": url,
+                "audio_url": audio_url,
+                "cover": "🎵"
+            })
+
+        return web.json_response({
+            "name": pl_name,
+            "tracks": track_list
+        })
+    except Exception as e:
+        logger.error(f"API error: {e}")
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def start_api_server():
+    """Запускає aiohttp сервер для API плеєра."""
+    if not AIOHTTP_AVAILABLE:
+        logger.warning("aiohttp not available — API server not started")
+        return
+
+    app = web.Application()
+
+    # CORS middleware
+    async def cors_middleware(app, handler):
+        async def middleware_handler(request):
+            if request.method == "OPTIONS":
+                return web.Response(
+                    headers={
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "GET, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type",
+                    }
+                )
+            response = await handler(request)
+            response.headers["Access-Control-Allow-Origin"] = "*"
+            return response
+        return middleware_handler
+
+    app.middlewares.append(cors_middleware)
+    app.router.add_get("/api/playlist/{playlist_id}", api_playlist)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"🌐 API server started on port {port}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  WEB APP: Відкрити плеєр
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def open_player(msg, playlist_id, uid, ctx):
+    """Відправляє повідомлення з кнопкою Web App для відкриття плеєра."""
+    l = get_lang(uid)
+    texts = {
+        "uk": {"open": "🎵 Відкрити плеєр", "desc": "Натисни кнопку нижче, щоб відкрити плеєр у повноекранному режимі."},
+        "ru": {"open": "🎵 Открыть плеер", "desc": "Нажми кнопку ниже, чтобы открыть плеер в полноэкранном режиме."},
+        "en": {"open": "🎵 Open Player", "desc": "Tap the button below to open the player in fullscreen mode."},
+        "fr": {"open": "🎵 Ouvrir le lecteur", "desc": "Appuie sur le bouton ci-dessous pour ouvrir le lecteur en plein écran."},
+    }
+    t = texts.get(l, texts["en"])
+
+    web_app_url = f"{WEB_APP_URL}/player.html?playlist={playlist_id}&user={uid}"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(t["open"], web_app=WebAppInfo(url=web_app_url))],
+        [back_btn(uid)]
+    ])
+
+    try:
+        await msg.edit_text(t["desc"], reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(t["desc"], reply_markup=kb, parse_mode="HTML")
+
+async def run_bot():
+    """Запускає бота з API сервером."""
     init_db()
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN (MAIN_BOT_TOKEN) not set!")
         return
+
+    # Запускаємо API сервер
+    if AIOHTTP_AVAILABLE:
+        asyncio.create_task(start_api_server())
 
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
@@ -3878,8 +4021,21 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    logger.info("🚀 MusicLSP v3.2 запускається...")
-    app.run_polling(drop_pending_updates=True)
+    logger.info("🚀 MusicLSP v3.2 + Web App Player запускається...")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+
+    # Тримаємо процес живим
+    while True:
+        await asyncio.sleep(3600)
+
+
+def main():
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        logger.info("👋 Бот зупинено")
 
 
 if __name__ == "__main__":
