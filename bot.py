@@ -2737,10 +2737,18 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
     for i, t in enumerate(tracks):
         global_idx = start + i
         icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
+        # Кешуємо URL для кнопки "Додати в бібліотеку"
+        url_id = cache_url(ctx.bot_data, t["url"], t["title"], t.get("channel", ""))
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {t['title'][:42]} ({t['duration']})",
                 callback_data=f"dl|{global_idx}|{ck}"
+            )
+        ])
+        kb.append([
+            InlineKeyboardButton(
+                "📚 Додати в бібліотеку",
+                callback_data=f"addlib|{url_id}"
             )
         ])
 
@@ -3317,6 +3325,10 @@ async def show_artist(msg, artist, uid, ctx, max_songs=10):
             f"🎵 {tr['title'][:42]} ({tr['duration']})",
             callback_data=f"dlurl|{url_id}|{tr['title'][:30]}|{tr['channel'][:20]}"
         )])
+        kb.append([InlineKeyboardButton(
+            "📚 Додати в бібліотеку",
+            callback_data=f"addlib|{url_id}"
+        )])
     kb.append([back_btn(uid)])
 
     per = 40
@@ -3438,10 +3450,17 @@ async def search_by_genre(msg, genre_key, uid, ctx):
     kb = []
     for i, t in enumerate(tracks[:10]):
         icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
+        url_id = cache_url(ctx.bot_data, t["url"], t["title"], t.get("channel", ""))
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {t['title'][:40]} ({t['duration']})",
                 callback_data=f"dl|{i}|{ck}"
+            )
+        ])
+        kb.append([
+            InlineKeyboardButton(
+                "📚 Додати в бібліотеку",
+                callback_data=f"addlib|{url_id}"
             )
         ])
     kb.append([back_btn(uid)])
@@ -3818,7 +3837,9 @@ async def ai_recommend(msg, query, uid, ctx):
     kb = []
     for i, t in enumerate(similar[:10]):
         icon = "🎵" if t.get("source") == "soundcloud" else "🟣" if t.get("source") == "deezer" else "🟢"
+        url_id = cache_url(ctx.bot_data, t["url"], t["title"], t.get("channel", ""))
         kb.append([InlineKeyboardButton(f"{icon} {t['title'][:40]} ({t['duration']})", callback_data=f"dl|{i}|{ck}")])
+        kb.append([InlineKeyboardButton("📚 Додати в бібліотеку", callback_data=f"addlib|{url_id}")])
     kb.append([back_btn(uid)])
     text = f"🤖 <b>Схожа музика для:</b> {query}\n🎤 <b>Базовий артист:</b> {seed_artist}\n\nЗнайдено {len(similar)} треків:\n\nОбери пісню 👇"
     try:
