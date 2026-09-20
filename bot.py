@@ -2109,14 +2109,7 @@ async def _open_screen(msg, uid, ctx, screen):
     set_state(uid, "")
 
     if screen == "home" or not screen:
-        text = tx("home", l, bot=BOT_NAME)
-        if is_premium(uid):
-            text += "\n⭐ Premium"
-        kb, _ = main_kb(uid)
-        try:
-            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+        await show_welcome(msg, uid)
         return
 
     if screen == "search":
@@ -2211,17 +2204,50 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def show_welcome(msg, uid):
+    """Юзерам — тільки WebApp. Адмінка лишається в чаті через /admin."""
     l = get_lang(uid)
-    text = tx("welcome", l, bot=BOT_NAME, author=AUTHOR)
-    if is_premium(uid):
-        badge = {
-            "uk": "\n\n⭐ <b>Premium активний</b> — усі функції відкриті",
-            "ru": "\n\n⭐ <b>Premium активен</b> — все функции открыты",
-            "en": "\n\n⭐ <b>Premium active</b> — all features unlocked",
-            "fr": "\n\n⭐ <b>Premium actif</b> — toutes les fonctions ouvertes",
-        }
-        text += badge.get(l, badge["en"])
-    kb, _ = main_kb(uid)
+    status = "⭐ Premium" if is_premium(uid) else "💿 Free"
+    texts = {
+        "uk": (
+            f"🎵 <b>{BOT_NAME}</b>\n"
+            f"────────────────\n"
+            f"Статус: <b>{status}</b>\n\n"
+            f"Уся музика, пошук, бібліотека й плейлисти — у панелі нижче.\n"
+            f"Адмін (якщо ти адмін): /admin"
+        ),
+        "ru": (
+            f"🎵 <b>{BOT_NAME}</b>\n"
+            f"────────────────\n"
+            f"Статус: <b>{status}</b>\n\n"
+            f"Вся музыка, поиск, библиотека и плейлисты — в панели ниже.\n"
+            f"Админ: /admin"
+        ),
+        "en": (
+            f"🎵 <b>{BOT_NAME}</b>\n"
+            f"────────────────\n"
+            f"Status: <b>{status}</b>\n\n"
+            f"Search, library and playlists are in the panel below.\n"
+            f"Admin: /admin"
+        ),
+        "fr": (
+            f"🎵 <b>{BOT_NAME}</b>\n"
+            f"────────────────\n"
+            f"Statut: <b>{status}</b>\n\n"
+            f"Tout est dans le panneau ci-dessous.\n"
+            f"Admin: /admin"
+        ),
+    }
+    text = texts.get(l, texts["en"])
+    panel_url = f"{WEB_APP_URL.rstrip('/')}/index.html?user={uid}"
+    open_labels = {
+        "uk": "🚀 Відкрити панель",
+        "ru": "🚀 Открыть панель",
+        "en": "🚀 Open panel",
+        "fr": "🚀 Ouvrir le panneau",
+    }
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(open_labels.get(l, "🚀 Open panel"), web_app=WebAppInfo(url=panel_url))],
+    ])
     try:
         await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -2244,7 +2270,7 @@ async def _show_admin_panel(msg, uid):
         "en": "🔧 <b>Admin panel</b>\n\nChoose action:",
         "fr": "🔧 <b>Panneau admin</b>\n\nChoisis l'action:",
     }
-    back_labels = {"uk": "◀️ Назад", "ru": "◀️ Назад", "en": "◀️ Back", "fr": "◀️ Retour"}
+    close_labels = {"uk": "✖️ Закрити", "ru": "✖️ Закрыть", "en": "✖️ Close", "fr": "✖️ Fermer"}
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("💎 Дати Premium", callback_data="adm:premium")],
         [InlineKeyboardButton("💿 Забрати Premium", callback_data="adm:unpremium")],
@@ -2252,7 +2278,7 @@ async def _show_admin_panel(msg, uid):
         [InlineKeyboardButton("🔍 Знайти юзера", callback_data="adm:find")],
         [InlineKeyboardButton("👥 Останні 20 юзерів", callback_data="adm:users")],
         [InlineKeyboardButton("📊 Статистика", callback_data="adm:stats")],
-        [InlineKeyboardButton(back_labels.get(l, "◀️ Back"), callback_data="adm:panel")],
+        [InlineKeyboardButton(close_labels.get(l, "✖️ Close"), callback_data="m:home")],
     ])
     try:
         await msg.edit_text(texts.get(l, texts["en"]), reply_markup=kb, parse_mode="HTML")
@@ -2281,23 +2307,11 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await show_welcome(q.message, uid)
         return
 
-    # Home
+    # Home — лише WebApp (меню кнопок більше не показуємо)
     if data == "m:home":
         set_state(uid, "")
         ctx.bot_data.setdefault("nav", {})[uid] = ["home"]
-        text = tx("home", l, bot=BOT_NAME)
-        if is_premium(uid):
-            text += {
-                "uk": "\n⭐ Premium",
-                "ru": "\n⭐ Premium",
-                "en": "\n⭐ Premium",
-                "fr": "\n⭐ Premium",
-            }.get(l, "\n⭐ Premium")
-        kb, _ = main_kb(uid)
-        try:
-            await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
-        except Exception:
-            await q.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
+        await show_welcome(q.message, uid)
         return
 
     # Назад — попередній екран зі стеку
@@ -4253,47 +4267,45 @@ async def get_lyrics(msg, query, uid):
 #  WEB APP API (для плеєра)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _track_dict(t):
+    if isinstance(t, dict):
+        return {
+            "title": t.get("title") or "—",
+            "artist": t.get("artist") or t.get("channel") or "—",
+            "duration": t.get("duration") or "—",
+            "url": t.get("url") or "",
+            "audio_url": t.get("audio_url"),
+            "cover": t.get("cover") or "🎵",
+            "source": t.get("source") or "",
+        }
+    return {
+        "title": t["title"] if "title" in t.keys() else "—",
+        "artist": (t["artist"] if "artist" in t.keys() else (t["channel"] if "channel" in t.keys() else "—")),
+        "duration": t["duration"] if "duration" in t.keys() else "—",
+        "url": t["url"] if "url" in t.keys() else "",
+        "audio_url": None,
+        "cover": "🎵",
+        "source": "",
+    }
+
+
 async def api_playlist(request):
-    """API: повертає JSON з треками плейлиста для Web App плеєра."""
     try:
         playlist_id = int(request.match_info.get("playlist_id", "0"))
         user_id = int(request.query.get("user", "0"))
-
         pl, tracks = get_playlist(playlist_id)
         if not pl:
             return web.json_response({"error": "Playlist not found"}, status=404)
-
-        # Перевірка власника
         pl_uid = pl.get("user_id") if isinstance(pl, dict) else pl["user_id"]
         if user_id and int(pl_uid) != int(user_id):
             return web.json_response({"error": "Forbidden"}, status=403)
-
         pl_name = pl.get("name", "Плейлист") if isinstance(pl, dict) else pl["name"]
-
-        # Не викликаємо yt-dlp на кожен трек — це блокує і часто дає прострочені URL.
-        # Плеєр використовує embed (SoundCloud/Deezer) або audio_url якщо є.
-        track_list = []
-        for t in tracks:
-            title = t.get("title", "—") if isinstance(t, dict) else t["title"]
-            artist = t.get("artist", "—") if isinstance(t, dict) else t["artist"]
-            url = t.get("url", "") if isinstance(t, dict) else t["url"]
-            duration = t.get("duration", "—") if isinstance(t, dict) else t["duration"]
-
-            track_list.append({
-                "title": title,
-                "artist": artist,
-                "duration": duration,
-                "url": url or "",
-                "audio_url": None,
-                "cover": "🎵"
-            })
-
         return web.json_response({
             "name": pl_name,
-            "tracks": track_list
+            "tracks": [_track_dict(t) for t in tracks],
         })
     except Exception as e:
-        logger.error(f"API error: {e}", exc_info=True)
+        logger.error(f"API playlist error: {e}", exc_info=True)
         return web.json_response({"error": str(e)}, status=500)
 
 
@@ -4301,8 +4313,186 @@ async def api_health(request):
     return web.json_response({"ok": True, "service": "MusicLSP"})
 
 
+async def api_user(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        if not uid:
+            return web.json_response({"error": "user required"}, status=400)
+        u = get_user(uid)
+        if not u:
+            create_user(uid, "")
+            u = get_user(uid)
+        username = ""
+        if isinstance(u, dict):
+            username = u.get("username") or ""
+            expires = u.get("premium_expires")
+        else:
+            try:
+                username = u["username"] or ""
+            except Exception:
+                username = ""
+            try:
+                expires = u["premium_expires"]
+            except Exception:
+                expires = None
+        lib = get_library(uid) if uid else []
+        stats = get_stats_user(uid) if uid else {"dl": 0}
+        return web.json_response({
+            "id": uid,
+            "username": username,
+            "premium": is_premium(uid),
+            "premium_expires": str(expires) if expires else None,
+            "library_count": len(lib) if lib else 0,
+            "history_count": stats.get("dl", 0) if isinstance(stats, dict) else 0,
+        })
+    except Exception as e:
+        logger.error(f"api_user: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_search(request):
+    try:
+        q = (request.query.get("q") or "").strip()
+        if not q:
+            return web.json_response({"tracks": []})
+        tracks = await async_search(q, limit=25)
+        return web.json_response({"tracks": [_track_dict(t) for t in (tracks or [])]})
+    except Exception as e:
+        logger.error(f"api_search: {e}", exc_info=True)
+        return web.json_response({"error": str(e), "tracks": []}, status=500)
+
+
+async def api_albums(request):
+    try:
+        q = (request.query.get("q") or "").strip()
+        if not q:
+            return web.json_response({"albums": []})
+        albums = await async_search_albums(q, limit_per_source=20, hide_remasters=True)
+        out = []
+        for a in albums or []:
+            out.append({
+                "name": a.get("name"),
+                "artist": a.get("artist"),
+                "year": a.get("year"),
+                "total_tracks": a.get("total_tracks"),
+                "mbid": a.get("mbid"),
+                "deezer_id": a.get("deezer_id"),
+            })
+        return web.json_response({"albums": out})
+    except Exception as e:
+        logger.error(f"api_albums: {e}", exc_info=True)
+        return web.json_response({"error": str(e), "albums": []}, status=500)
+
+
+async def api_library(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        items = get_library(uid) if uid else []
+        tracks = []
+        for s in items or []:
+            if isinstance(s, dict):
+                tracks.append({
+                    "title": s.get("title") or "—",
+                    "artist": s.get("artist") or "—",
+                    "url": s.get("url") or "",
+                    "duration": "—",
+                    "audio_url": None,
+                    "cover": "🎵",
+                })
+            else:
+                tracks.append({
+                    "title": s["title"],
+                    "artist": s["artist"],
+                    "url": s["url"],
+                    "duration": "—",
+                    "audio_url": None,
+                    "cover": "🎵",
+                })
+        return web.json_response({"tracks": tracks})
+    except Exception as e:
+        logger.error(f"api_library: {e}", exc_info=True)
+        return web.json_response({"error": str(e), "tracks": []}, status=500)
+
+
+async def api_playlists(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        if not uid or not is_premium(uid):
+            return web.json_response({"playlists": []})
+        pls = get_playlists(uid) or []
+        out = []
+        for p in pls:
+            if isinstance(p, dict):
+                out.append({"id": p.get("id"), "name": p.get("name")})
+            else:
+                out.append({"id": p["id"], "name": p["name"]})
+        return web.json_response({"playlists": out})
+    except Exception as e:
+        logger.error(f"api_playlists: {e}", exc_info=True)
+        return web.json_response({"error": str(e), "playlists": []}, status=500)
+
+
+async def api_download(request):
+    """Ставить завантаження в чергу і надсилає MP3 користувачу в Telegram."""
+    try:
+        uid = int(request.query.get("user", "0"))
+        url = (request.query.get("url") or "").strip()
+        title = (request.query.get("title") or "Track")[:80]
+        artist = (request.query.get("artist") or "")[:80]
+        if not uid or not url:
+            return web.json_response({"ok": False, "error": "user/url required"}, status=400)
+        if not BOT_TOKEN:
+            return web.json_response({"ok": False, "error": "bot not configured"}, status=500)
+
+        async def _job():
+            from telegram import Bot
+            bot = Bot(BOT_TOKEN)
+            try:
+                await bot.send_message(uid, f"⚡ Завантажую: <b>{title}</b>…", parse_mode="HTML")
+            except Exception:
+                pass
+            with tempfile.TemporaryDirectory() as tmp:
+                path = await async_download_with_fallback(url, tmp, DEF_QUALITY)
+                if not path or not os.path.exists(path):
+                    try:
+                        await bot.send_message(uid, "💔 Не вийшло завантажити трек")
+                    except Exception:
+                        pass
+                    return
+                size_mb = os.path.getsize(path) / 1024 / 1024
+                if size_mb > MAX_MB:
+                    try:
+                        await bot.send_message(uid, "😤 Файл завеликий")
+                    except Exception:
+                        pass
+                    return
+                try:
+                    with open(path, "rb") as f:
+                        await bot.send_audio(
+                            chat_id=uid,
+                            audio=f,
+                            title=title[:64],
+                            performer=artist[:64],
+                            filename=f"{title[:50]}.mp3",
+                        )
+                    add_history(uid, title, artist)
+                    add_listening_stat(uid, title, artist, 0, "download")
+                except Exception as e:
+                    logger.error(f"api_download send: {e}")
+                    try:
+                        await bot.send_message(uid, "💔 Помилка відправки")
+                    except Exception:
+                        pass
+
+        asyncio.create_task(_job())
+        return web.json_response({"ok": True, "queued": True})
+    except Exception as e:
+        logger.error(f"api_download: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def start_api_server():
-    """Запускає aiohttp сервер для API плеєра."""
+    """Запускає aiohttp API для WebApp-панелі."""
     if not AIOHTTP_AVAILABLE:
         logger.warning("aiohttp not available — API server not started")
         return
@@ -4326,15 +4516,20 @@ async def start_api_server():
     app.middlewares.append(cors_middleware)
     app.router.add_get("/", api_health)
     app.router.add_get("/health", api_health)
+    app.router.add_get("/api/user", api_user)
+    app.router.add_get("/api/search", api_search)
+    app.router.add_get("/api/albums", api_albums)
+    app.router.add_get("/api/library", api_library)
+    app.router.add_get("/api/playlists", api_playlists)
     app.router.add_get("/api/playlist/{playlist_id}", api_playlist)
+    app.router.add_get("/api/download", api_download)
 
     runner = web.AppRunner(app)
     await runner.setup()
-
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    logger.info(f"🌐 API server started on port {port}")
+    logger.info(f"🌐 WebApp API started on port {port}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
