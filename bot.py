@@ -463,22 +463,56 @@ LANGUAGES = {
 
 TEXTS = {
     "welcome": {
-        "uk": "🎵 <b>Вітаємо в {bot}!</b>\n\n💿 <b>Free</b> — пошук, завантаження, бібліотека (20)\n💎 <b>Premium</b> — ZIP, плейлисти, радіо, статистика, схожа музика",
-        "ru": "🎵 <b>Добро пожаловать в {bot}!</b>\n\n💿 <b>Free</b> — поиск, скачивание, библиотека (20)\n💎 <b>Premium</b> — ZIP, плейлисты, радио, статистика, похожая музыка",
-        "en": "🎵 <b>Welcome to {bot}!</b>\n\n💿 <b>Free</b> — search, download, library (20)\n💎 <b>Premium</b> — ZIP, playlists, radio, stats, similar music",
-        "fr": "🎵 <b>Bienvenue sur {bot}!</b>\n\n💿 <b>Free</b> — recherche, téléchargement, bibliothèque (20)\n💎 <b>Premium</b> — ZIP, playlists, radio, stats, musique similaire",
+        "uk": (
+            "🎵 <b>{bot}</b>\n"
+            "────────────────\n"
+            "Шукай · слухай · зберігай\n\n"
+            "💿 <b>Free</b> — пошук, MP3, бібліотека (20)\n"
+            "💎 <b>Premium</b> — ZIP · плейлисти · радіо · 320 kbps\n\n"
+            "Обери дію нижче 👇"
+        ),
+        "ru": (
+            "🎵 <b>{bot}</b>\n"
+            "────────────────\n"
+            "Ищи · слушай · сохраняй\n\n"
+            "💿 <b>Free</b> — поиск, MP3, библиотека (20)\n"
+            "💎 <b>Premium</b> — ZIP · плейлисты · радио · 320 kbps\n\n"
+            "Выбери действие ниже 👇"
+        ),
+        "en": (
+            "🎵 <b>{bot}</b>\n"
+            "────────────────\n"
+            "Search · listen · save\n\n"
+            "💿 <b>Free</b> — search, MP3, library (20)\n"
+            "💎 <b>Premium</b> — ZIP · playlists · radio · 320 kbps\n\n"
+            "Pick an action below 👇"
+        ),
+        "fr": (
+            "🎵 <b>{bot}</b>\n"
+            "────────────────\n"
+            "Cherche · écoute · sauvegarde\n\n"
+            "💿 <b>Free</b> — recherche, MP3, bibliothèque (20)\n"
+            "💎 <b>Premium</b> — ZIP · playlists · radio · 320 kbps\n\n"
+            "Choisis une action 👇"
+        ),
+    },
+    "home": {
+        "uk": "🏠 <b>{bot}</b>\n────────────────\nОбери, що робимо 👇",
+        "ru": "🏠 <b>{bot}</b>\n────────────────\nВыбери действие 👇",
+        "en": "🏠 <b>{bot}</b>\n────────────────\nWhat do you want to do? 👇",
+        "fr": "🏠 <b>{bot}</b>\n────────────────\nQue veux-tu faire ? 👇",
     },
     "premium_only": {
-        "uk": "⛔ Тільки для <b>Premium</b>\n💎 Оформити → /subscription",
-        "ru": "⛔ Только для <b>Premium</b>\n💎 Оформить → /subscription",
-        "en": "⛔ <b>Premium</b> only\n💎 Get → /subscription",
-        "fr": "⛔ Uniquement <b>Premium</b>\n💎 Obtenir → /subscription",
+        "uk": "⛔ Це функція <b>Premium</b>\n\n💎 Оформити підписку в меню → <b>Підписка</b>",
+        "ru": "⛔ Это функция <b>Premium</b>\n\n💎 Оформить подписку в меню → <b>Подписка</b>",
+        "en": "⛔ <b>Premium</b> feature\n\n💎 Get it from the menu → <b>Premium</b>",
+        "fr": "⛔ Fonction <b>Premium</b>\n\n💎 Obtiens-la dans le menu → <b>Premium</b>",
     },
     "library_full": {
-        "uk": "📚 Бібліотека повна ({max})\nВидали або оформи Premium 💎",
-        "ru": "📚 Библиотека полна ({max})\nУдали или оформи Premium 💎",
-        "en": "📚 Library full ({max})\nRemove or get Premium 💎",
-        "fr": "📚 Bibliothèque pleine ({max})\nSupprime ou passe Premium 💎",
+        "uk": "📚 Бібліотека повна ({max})\nВидали трек або оформи Premium 💎",
+        "ru": "📚 Библиотека полна ({max})\nУдали трек или оформи Premium 💎",
+        "en": "📚 Library full ({max})\nRemove a track or get Premium 💎",
+        "fr": "📚 Bibliothèque pleine ({max})\nSupprime un morceau ou passe Premium 💎",
     },
 }
 
@@ -1417,23 +1451,17 @@ def search_all(query, limit=30):
 
 
 def search_all_albums(query, limit_per_source=30, hide_remasters=True):
-    """Search albums in MusicBrainz + Deezer. Returns unified + deduped results."""
-    loop = asyncio.get_event_loop()
-    mb_task = loop.run_in_executor(None, mb_search_album, query, limit_per_source)
-    dz_task = loop.run_in_executor(None, dz_search_albums, query, limit_per_source)
-
+    """Синхронний пошук альбомів (MusicBrainz + Deezer), з дедуплікацією."""
     try:
-        mb_results, dz_results = loop.run_until_complete(asyncio.gather(
-            asyncio.ensure_future(_to_thread(mb_search_album, query, limit_per_source)),
-            asyncio.ensure_future(_to_thread(dz_search_albums, query, limit_per_source))
-        )) if False else (mb_task.result(), dz_task.result())
-    except Exception:
-        try:
-            mb_results = mb_task.result() if hasattr(mb_task, 'result') else mb_search_album(query, limit_per_source)
-            dz_results = dz_task.result() if hasattr(dz_task, 'result') else dz_search_albums(query, limit_per_source)
-        except Exception as e:
-            logger.error(f"Album search gather failed: {e}")
-            return []
+        mb_results = mb_search_album(query, limit_per_source) or []
+    except Exception as e:
+        logger.warning(f"MB album search failed: {e}")
+        mb_results = []
+    try:
+        dz_results = dz_search_albums(query, limit_per_source) or []
+    except Exception as e:
+        logger.warning(f"DZ album search failed: {e}")
+        dz_results = []
 
     if hide_remasters:
         mb_results = filter_preferred_releases(mb_results, hide_remasters=True)
@@ -1445,8 +1473,12 @@ def search_all_albums(query, limit_per_source=30, hide_remasters=True):
 
 
 async def _to_thread(func, *args, **kwargs):
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, func, *args, **kwargs)
+    """Запускає блокуючу функцію в thread pool (сумісно з PTB)."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
 
 async def async_search_albums(query, limit_per_source=30, hide_remasters=True):
@@ -1805,51 +1837,79 @@ async def async_find_track(track_name, artist_name):
 
 # ─── Завантаження MP3 ─────────────────────────────────────────────────────────
 def download_mp3(url, out_dir, quality="192"):
+    """Завантажує аудіо через yt-dlp. Повертає шлях до файлу або None."""
     base_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        "outtmpl": os.path.join(out_dir, "%(title)s.%(ext)s"),
+        "outtmpl": os.path.join(out_dir, "%(id)s.%(ext)s"),
         "postprocessors": [{
             "key": "FFmpegExtractAudio",
             "preferredcodec": "mp3",
-            "preferredquality": quality,
+            "preferredquality": str(quality),
         }],
-        "quiet": True, "no_warnings": True, "noplaylist": True,
-        "socket_timeout": 30, "retries": 3,
-        "fragment_retries": 3, "file_access_retries": 3, "extractor_retries": 3,
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "file_access_retries": 3,
+        "extractor_retries": 3,
+        "restrictfilenames": True,
     }
-    if "deezer.com" in url:
+
+    # Deezer: yt-dlp НЕ приймає cookies={"arl": ...} — тільки cookiefile (Netscape)
+    if "deezer.com" in (url or ""):
         if DEEZER_ARL:
-            base_opts["cookies"] = {"arl": DEEZER_ARL}
-            logger.info("Using Deezer ARL cookie")
+            cookie_path = os.path.join(out_dir, "deezer_arl.txt")
+            try:
+                with open(cookie_path, "w", encoding="utf-8") as cf:
+                    cf.write("# Netscape HTTP Cookie File\n")
+                    cf.write(f".deezer.com\tTRUE\t/\tTRUE\t0\tarl\t{DEEZER_ARL}\n")
+                base_opts["cookiefile"] = cookie_path
+                logger.info("Using Deezer ARL via cookiefile")
+            except Exception as e:
+                logger.warning(f"Failed to write Deezer cookie file: {e}")
         elif os.path.exists(DEEZER_COOKIES_FILE):
             base_opts["cookiefile"] = DEEZER_COOKIES_FILE
             logger.info("Using Deezer cookies file")
+
     try:
         with yt_dlp.YoutubeDL(base_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-        if info:
-            mp3_files = list(Path(out_dir).glob("*.mp3"))
-            if mp3_files:
-                logger.info(f"Download success: {mp3_files[0].name}")
-                return str(mp3_files[0])
-            for ext in ["*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"]:
-                files = list(Path(out_dir).glob(ext))
-                if files:
-                    input_file = str(files[0])
-                    output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
+        if not info:
+            return None
+
+        mp3_files = list(Path(out_dir).glob("*.mp3"))
+        if mp3_files:
+            logger.info(f"Download success: {mp3_files[0].name}")
+            return str(mp3_files[0])
+
+        for ext in ("*.m4a", "*.webm", "*.opus", "*.ogg", "*.mp4"):
+            files = list(Path(out_dir).glob(ext))
+            if not files:
+                continue
+            input_file = str(files[0])
+            output_file = os.path.join(out_dir, f"{files[0].stem}.mp3")
+            try:
+                subprocess.run(
+                    [
+                        "ffmpeg", "-i", input_file, "-vn", "-ar", "44100",
+                        "-ac", "2", "-b:a", f"{quality}k", "-y", output_file,
+                    ],
+                    check=True, capture_output=True, timeout=90,
+                )
+                if os.path.exists(output_file):
                     try:
-                        subprocess.run([
-                            "ffmpeg", "-i", input_file, "-vn", "-ar", "44100",
-                            "-ac", "2", "-b:a", f"{quality}k", "-y", output_file,
-                        ], check=True, capture_output=True, timeout=60)
-                        if os.path.exists(output_file):
-                            os.remove(input_file)
-                            return output_file
-                    except Exception as conv_e:
-                        logger.warning(f"FFmpeg conversion failed: {conv_e}")
-                        return input_file
+                        os.remove(input_file)
+                    except OSError:
+                        pass
+                    return output_file
+            except Exception as conv_e:
+                logger.warning(f"FFmpeg conversion failed: {conv_e}")
+                return input_file
+        return None
     except Exception as e:
-        logger.error(f"Download failed: {e}")
+        logger.error(f"Download failed ({(url or '')[:80]}): {e}")
         return None
 # ═══════════════════════════════════════════════════════════════════════════════
 #  ДОПОМІЖНІ ФУНКЦІЇ ЗАВАНТАЖЕННЯ
@@ -1912,30 +1972,69 @@ async def create_album_zip(tracks, quality="192", tmp_dir=None):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main_kb(uid):
+    """Головне меню — 2 колонки, Premium-швидкі кнопки якщо є підписка."""
     l = get_lang(uid)
     btn = lambda text, data: InlineKeyboardButton(text, callback_data=data)
+    premium = is_premium(uid)
+
     labels = {
-        "uk": ["🔍 Пошук", "💿 Альбоми", "📚 Бібліотека", "👤 Профіль", "💎 Підписка", "🎁 Реферал", "⚙️ Налаштування"],
-        "ru": ["🔍 Поиск", "💿 Альбомы", "📚 Библиотека", "👤 Профиль", "💎 Подписка", "🎁 Реферал", "⚙️ Настройки"],
-        "en": ["🔍 Search", "💿 Albums", "📚 Library", "👤 Profile", "💎 Premium", "🎁 Invite", "⚙️ Settings"],
-        "fr": ["🔍 Recherche", "💿 Albums", "📚 Bibliothèque", "👤 Profil", "💎 Premium", "🎁 Inviter", "⚙️ Paramètres"],
+        "uk": {
+            "search": "🔍 Пошук", "albums": "💿 Альбоми",
+            "library": "📚 Бібліотека", "profile": "👤 Профіль",
+            "sub": "💎 Підписка", "ref": "🎁 Друзям",
+            "settings": "⚙️ Налаштування",
+            "playlists": "📋 Плейлисти", "radio": "📻 Радіо",
+            "zip": "📦 ZIP", "stats": "📊 Статистика",
+        },
+        "ru": {
+            "search": "🔍 Поиск", "albums": "💿 Альбомы",
+            "library": "📚 Библиотека", "profile": "👤 Профиль",
+            "sub": "💎 Подписка", "ref": "🎁 Друзьям",
+            "settings": "⚙️ Настройки",
+            "playlists": "📋 Плейлисты", "radio": "📻 Радио",
+            "zip": "📦 ZIP", "stats": "📊 Статистика",
+        },
+        "en": {
+            "search": "🔍 Search", "albums": "💿 Albums",
+            "library": "📚 Library", "profile": "👤 Profile",
+            "sub": "💎 Premium", "ref": "🎁 Invite",
+            "settings": "⚙️ Settings",
+            "playlists": "📋 Playlists", "radio": "📻 Radio",
+            "zip": "📦 ZIP", "stats": "📊 Stats",
+        },
+        "fr": {
+            "search": "🔍 Recherche", "albums": "💿 Albums",
+            "library": "📚 Bibliothèque", "profile": "👤 Profil",
+            "sub": "💎 Premium", "ref": "🎁 Inviter",
+            "settings": "⚙️ Paramètres",
+            "playlists": "📋 Playlists", "radio": "📻 Radio",
+            "zip": "📦 ZIP", "stats": "📊 Stats",
+        },
     }
     lb = labels.get(l, labels["en"])
-    return (
-        InlineKeyboardMarkup([
-            [btn(lb[0], "m:search"), btn(lb[1], "m:albums")],
-            [btn(lb[2], "m:library"), btn(lb[3], "m:profile")],
-            [btn(lb[4], "m:sub"), btn(lb[5], "m:ref")],
-            [btn(lb[6], "m:settings")],
-        ]),
-        "◀️ Back"
-    )
+
+    rows = [
+        [btn(lb["search"], "m:search"), btn(lb["albums"], "m:albums")],
+        [btn(lb["library"], "m:library"), btn(lb["profile"], "m:profile")],
+    ]
+    if premium:
+        rows.append([btn(lb["playlists"], "m:playlists"), btn(lb["radio"], "m:radio")])
+        rows.append([btn(lb["zip"], "m:zip_albums"), btn(lb["stats"], "m:stats")])
+    rows.append([btn(lb["sub"], "m:sub"), btn(lb["ref"], "m:ref")])
+    rows.append([btn(lb["settings"], "m:settings")])
+
+    return InlineKeyboardMarkup(rows), "◀️ Back"
 
 
 def back_btn(uid):
     l = get_lang(uid)
-    labels = {"uk": "◀️ Назад", "ru": "◀️ Назад", "en": "◀️ Back", "fr": "◀️ Retour"}
-    return InlineKeyboardButton(labels.get(l, "◀️ Back"), callback_data="m:home")
+    labels = {
+        "uk": "◀️ На головну",
+        "ru": "◀️ На главную",
+        "en": "◀️ Home",
+        "fr": "◀️ Accueil",
+    }
+    return InlineKeyboardButton(labels.get(l, "◀️ Home"), callback_data="m:home")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1969,8 +2068,19 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def show_welcome(msg, uid):
     l = get_lang(uid)
     text = tx("welcome", l, bot=BOT_NAME, author=AUTHOR)
+    if is_premium(uid):
+        badge = {
+            "uk": "\n\n⭐ <b>Premium активний</b> — усі функції відкриті",
+            "ru": "\n\n⭐ <b>Premium активен</b> — все функции открыты",
+            "en": "\n\n⭐ <b>Premium active</b> — all features unlocked",
+            "fr": "\n\n⭐ <b>Premium actif</b> — toutes les fonctions ouvertes",
+        }
+        text += badge.get(l, badge["en"])
     kb, _ = main_kb(uid)
-    await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+    try:
+        await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
 
 
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2028,29 +2138,30 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Home
     if data == "m:home":
+        set_state(uid, "")
+        text = tx("home", l, bot=BOT_NAME)
+        if is_premium(uid):
+            text += {
+                "uk": "\n⭐ Premium",
+                "ru": "\n⭐ Premium",
+                "en": "\n⭐ Premium",
+                "fr": "\n⭐ Premium",
+            }.get(l, "\n⭐ Premium")
         kb, _ = main_kb(uid)
         try:
-            await q.message.edit_text(
-                f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇",
-                reply_markup=kb,
-                parse_mode="HTML",
-            )
+            await q.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
         except Exception:
-            await q.message.reply_text(
-                f"🏠 <b>{BOT_NAME}</b>\n\nОбери дію 👇",
-                reply_markup=kb,
-                parse_mode="HTML",
-            )
+            await q.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
     # Search menu
     if data == "m:search":
         set_state(uid, "searching")
         prompts = {
-            "uk": "🔍 Введи назву пісні або артиста:",
-            "ru": "🔍 Введи название песни или артиста:",
-            "en": "🔍 Enter song name or artist:",
-            "fr": "🔍 Entre le nom de la chanson ou l'artiste:",
+            "uk": "🔍 <b>Пошук треків</b>\n────────────────\nВведи назву пісні або артиста\n\n<i>Приклад:</i> <code>Oxxxy Аргентина</code>",
+            "ru": "🔍 <b>Поиск треков</b>\n────────────────\nВведи название песни или артиста\n\n<i>Пример:</i> <code>Oxxxy Аргентина</code>",
+            "en": "🔍 <b>Track search</b>\n────────────────\nEnter song name or artist\n\n<i>Example:</i> <code>Linkin Park Numb</code>",
+            "fr": "🔍 <b>Recherche</b>\n────────────────\nEntre le nom de la chanson ou l'artiste",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2063,10 +2174,10 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if data == "m:albums":
         set_state(uid, "album_search")
         prompts = {
-            "uk": "💿 Введи назву альбому:\n\n<i>Приклади:</i>\n* <code>Yanix SS 20</code>\n* <code>Imagine Dragons Mercury</code>\n* <code>Linkin Park Hybrid Theory</code>",
-            "ru": "💿 Введи название альбома:\n\n<i>Примеры:</i>\n* <code>Yanix SS 20</code>",
-            "en": "💿 Enter album name:\n\n<i>Examples:</i>\n* <code>Imagine Dragons Mercury</code>",
-            "fr": "💿 Entre le nom de l'album:",
+            "uk": "💿 <b>Пошук альбомів</b>\n────────────────\nВведи назву альбому або артиста\n\n<i>Приклади:</i>\n• <code>Yanix SS 20</code>\n• <code>Imagine Dragons Mercury</code>\n• <code>Linkin Park Hybrid Theory</code>",
+            "ru": "💿 <b>Поиск альбомов</b>\n────────────────\nВведи название альбома или артиста\n\n<i>Примеры:</i>\n• <code>Yanix SS 20</code>\n• <code>Linkin Park Hybrid Theory</code>",
+            "en": "💿 <b>Album search</b>\n────────────────\nEnter album or artist name\n\n<i>Examples:</i>\n• <code>Imagine Dragons Mercury</code>\n• <code>Linkin Park Hybrid Theory</code>",
+            "fr": "💿 <b>Recherche d'albums</b>\n────────────────\nEntre le nom de l'album ou de l'artiste",
         }
         await q.message.edit_text(
             prompts.get(l, prompts["en"]),
@@ -2271,12 +2382,12 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("dlurl|"):
-        parts = data.split("|", 3)
-        url_id = parts[1]
-        title = parts[2] if len(parts) > 2 else "трек"
-        artist = parts[3] if len(parts) > 3 else ""
+        # Тільки hash — title/artist беремо з кешу (callback_data ≤ 64 байт)
+        url_id = data.split("|", 1)[1].split("|")[0]
         cached = get_cached_url(ctx.bot_data, url_id)
         url = cached.get("url", "")
+        title = cached.get("title") or "трек"
+        artist = cached.get("artist") or ""
         if not url:
             await q.message.reply_text("❌ Посилання застаріло. Спробуй знайти знову.")
             return
@@ -2388,16 +2499,17 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("searchp|"):
         parts = data.split("|", 2)
-        query = parts[1]
+        qkey = parts[1]
         page = int(parts[2]) if len(parts) > 2 else 0
+        query = ctx.bot_data.get("search_queries", {}).get(qkey) or qkey
         await do_search_paged(q.message, query, uid, ctx, page, edit=True)
         return
 
-    # Album pagination — НОВИЙ ОБРОБНИК
     if data.startswith("albumpage|"):
         parts = data.split("|", 2)
-        query = parts[1]
+        qkey = parts[1]
         page = int(parts[2]) if len(parts) > 2 else 0
+        query = ctx.bot_data.get("album_queries", {}).get(qkey) or qkey
         await do_album_search_paged(q.message, query, uid, ctx, page, edit=True)
         return
 
@@ -2784,6 +2896,9 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
 
     ck = f"search_{uid}_{msg.message_id}"
     ctx.bot_data.setdefault("cache", {})[ck] = all_tracks
+    # Короткий ключ для пагінації (query в callback_data легко > 64 байт)
+    qkey = hashlib.md5(f"sq:{uid}:{query}".encode()).hexdigest()[:10]
+    ctx.bot_data.setdefault("search_queries", {})[qkey] = query
 
     start = page * SEARCH_PER_PAGE
     end = start + SEARCH_PER_PAGE
@@ -2803,9 +2918,9 @@ async def do_search_paged(update_or_msg, query, uid, ctx, page=0, edit=False):
 
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("◀️ Попередня", callback_data=f"searchp|{query}|{page-1}"))
+        nav.append(InlineKeyboardButton("◀️ Попередня", callback_data=f"searchp|{qkey}|{page-1}"))
     if has_more:
-        nav.append(InlineKeyboardButton("➡️ Наступна", callback_data=f"searchp|{query}|{page+1}"))
+        nav.append(InlineKeyboardButton("➡️ Наступна", callback_data=f"searchp|{qkey}|{page+1}"))
     if nav:
         kb.append(nav)
 
@@ -2870,8 +2985,10 @@ async def do_album_search_paged(update_or_msg, query, uid, ctx, page=0, edit=Fal
             pass
         return
 
-    # Зберігаємо для пагінації
-    ck = f"album_search_{uid}_{query}"
+    # Зберігаємо для пагінації (короткий ключ — query в callback легко > 64 байт)
+    qkey = hashlib.md5(f"aq:{uid}:{query}".encode()).hexdigest()[:10]
+    ctx.bot_data.setdefault("album_queries", {})[qkey] = query
+    ck = f"album_search_{uid}_{qkey}"
     ctx.bot_data.setdefault("album_cache", {})[ck] = albums
 
     start = page * ALBUM_PER_PAGE
@@ -2893,7 +3010,6 @@ async def do_album_search_paged(update_or_msg, query, uid, ctx, page=0, edit=Fal
         year = album.get("year", "—")
         tracks_count = album.get("total_tracks", 0)
 
-        # Визначаємо джерело
         if album.get("mbid"):
             cb_data = f"mb_album|{album['mbid']}"
             icon = "🔴"
@@ -2906,15 +3022,14 @@ async def do_album_search_paged(update_or_msg, query, uid, ctx, page=0, edit=Fal
         label = f"{icon} {name} — {artist} ({year}, {tracks_count} 🎵)"
         kb.append([InlineKeyboardButton(label, callback_data=cb_data)])
 
-    # Пагінація
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton(
-            "◀️ Попередня", callback_data=f"albumpage|{query}|{page-1}"
+            "◀️ Попередня", callback_data=f"albumpage|{qkey}|{page-1}"
         ))
     if has_more:
         nav.append(InlineKeyboardButton(
-            "➡️ Наступна", callback_data=f"albumpage|{query}|{page+1}"
+            "➡️ Наступна", callback_data=f"albumpage|{qkey}|{page+1}"
         ))
     if nav:
         kb.append(nav)
@@ -3385,7 +3500,7 @@ async def show_artist(msg, artist, uid, ctx, max_songs=10):
         url_id = cache_url(ctx.bot_data, tr["url"], tr["title"], tr.get("channel", ""))
         kb.append([InlineKeyboardButton(
             f"🎵 {tr['title'][:42]} ({tr['duration']})",
-            callback_data=f"dlurl|{url_id}|{tr['title'][:30]}|{tr['channel'][:20]}"
+            callback_data=f"dlurl|{url_id}"
         )])
     kb.append([back_btn(uid)])
 
@@ -3553,7 +3668,7 @@ async def show_library(msg, uid, ctx):
         kb.append([
             InlineKeyboardButton(
                 f"{icon} {s['title'][:35]}",
-                callback_data=f"dlurl|{url_id}|{s['title'][:30]}|{s['artist'][:20]}"
+                callback_data=f"dlurl|{url_id}"
             ),
             InlineKeyboardButton("🗑", callback_data=f"libdel|{s['id']}")
         ])
@@ -3606,46 +3721,62 @@ async def show_profile(msg, uid):
 async def show_sub(msg, uid, ctx=None):
     l = get_lang(uid)
     premium = is_premium(uid)
-    status_icon = "✅ Premium" if premium else "💿 Free"
     quality = DEF_QUALITY
     if ctx:
         quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
 
-    text = f"💎 <b>Підписка</b>\n\nСтатус: <b>{status_icon}</b>\n\n"
     if not premium:
-        text += (
-            f"💿 <b>Free:</b>\n* Пошук та завантаження MP3 (192kbps)\n* Бібліотека: до 20 записів\n* Всі пісні артиста: до 10\n\n"
-            f"💎 <b>Premium:</b>\n* Якість: 192 / 320 kbps\n* Бібліотека: необмежана\n* ZIP альбоми\n* Плейлисти\n* Радіо\n* Batch download: 20/50/100\n\n"
-            f"💰 Оформити Premium: {AUTH_BOT}"
+        text = (
+            "💎 <b>Підписка</b>\n"
+            "────────────────\n"
+            "Статус: <b>💿 Free</b>\n\n"
+            "<b>Free</b>\n"
+            "• MP3 192 kbps\n"
+            "• Бібліотека до 20\n"
+            "• Пісні артиста до 10\n\n"
+            "<b>Premium</b>\n"
+            "• 192 / 320 kbps\n"
+            "• Необмежена бібліотека\n"
+            "• ZIP альбоми · плейлисти · радіо\n"
+            "• Batch 20 / 50 / 100\n"
+            "• Статистика · схожа музика · тексти\n\n"
+            f"Оформити: {AUTH_BOT}"
         )
     else:
-        text += (
-            f"⭐ <b>Premium активовано!</b>\n\n"
-            f"🎵 Якість: {quality}kbps\n"
-            f"📚 Бібліотека: необмежана\n"
-            f"📦 ZIP: доступно\n📻 Радіо: доступно\n"
-            f"🤖 Схожа музика: доступно"
+        text = (
+            "💎 <b>Підписка</b>\n"
+            "────────────────\n"
+            "Статус: <b>⭐ Premium</b>\n\n"
+            f"🎵 Якість: <b>{quality} kbps</b>\n"
+            "📚 Бібліотека: без ліміту\n"
+            "📦 ZIP · 📻 Радіо · 📋 Плейлисти — доступно\n\n"
+            "Швидкі дії 👇"
         )
 
     kb = []
     if not premium:
-        kb.append([InlineKeyboardButton("💳 Оформити Premium", url=f"https://t.me/{AUTH_BOT.replace('@', '')}")])
+        kb.append([InlineKeyboardButton(
+            "💳 Оформити Premium",
+            url=f"https://t.me/{AUTH_BOT.replace('@', '')}"
+        )])
         kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
     else:
         kb.append([
-            InlineKeyboardButton("📦 ZIP Альбоми", callback_data="m:zip_albums"),
-            InlineKeyboardButton("📋 Плейлисти", callback_data="m:playlists")
+            InlineKeyboardButton("📦 ZIP", callback_data="m:zip_albums"),
+            InlineKeyboardButton("📋 Плейлисти", callback_data="m:playlists"),
         ])
         kb.append([
             InlineKeyboardButton("📻 Радіо", callback_data="m:radio"),
-            InlineKeyboardButton("🎵 Жанри", callback_data="m:genres")
+            InlineKeyboardButton("🎵 Жанри", callback_data="m:genres"),
         ])
         kb.append([
             InlineKeyboardButton("📊 Статистика", callback_data="m:stats"),
-            InlineKeyboardButton("🤖 Схожа музика", callback_data="m:ai_recommend")
+            InlineKeyboardButton("🤖 Схожа музика", callback_data="m:ai_recommend"),
         ])
-        kb.append([InlineKeyboardButton("🎤 Тексти", callback_data="m:lyrics")])
-        kb.append([InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings")])
+        kb.append([
+            InlineKeyboardButton("🎤 Тексти", callback_data="m:lyrics"),
+            InlineKeyboardButton("⚙️ Налаштування", callback_data="m:settings"),
+        ])
     kb.append([back_btn(uid)])
 
     try:
@@ -3761,7 +3892,7 @@ async def show_playlist(msg, pid, uid, ctx):
         kb.append([
             InlineKeyboardButton(
                 f"▶️ {i+1}. {t_title[:35]}",
-                callback_data=f"dlurl|{url_id}|{t_title[:30]}|{t_artist[:20]}"
+                callback_data=f"dlurl|{url_id}"
             ),
             InlineKeyboardButton("🗑", callback_data=f"pl_trackdel|{pid}|{t_id}")
         ])
