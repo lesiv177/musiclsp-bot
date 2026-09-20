@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 
 # ─── Web App плеєр ────────────────────────────────────────────────────────────
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://your-username.github.io/musiclsp-player")
+# Публічна адреса САМОГО бота (де піднімається aiohttp API, /api/... ) — це НЕ те саме, що WEB_APP_URL
+# На Railway це виду https://your-service.up.railway.app (без слеша в кінці)
+API_URL = os.environ.get("API_URL", "").rstrip("/")
 
 # ─── AIOHTTP для API плеєра ─────────────────────────────────────────────────
 try:
@@ -2244,6 +2247,8 @@ async def show_welcome(msg, uid, bot=None):
         panel_url = None
     else:
         panel_url = f"{base}/index.html?user={uid}"
+        if API_URL:
+            panel_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
 
     open_labels = {
         "uk": "🚀 Відкрити панель",
@@ -4577,6 +4582,8 @@ async def open_player(msg, playlist_id, uid, ctx):
     t = texts.get(l, texts["en"])
 
     web_app_url = f"{WEB_APP_URL}/index.html?playlist={playlist_id}&user={uid}"
+    if API_URL:
+        web_app_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(t["open"], web_app=WebAppInfo(url=web_app_url))],
