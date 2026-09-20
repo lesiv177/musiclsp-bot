@@ -3164,14 +3164,15 @@ async def do_download(msg, url, title, artist, uid, ctx):
     l = get_lang(uid)
     quality = ctx.bot_data.get("quality", {}).get(uid, DEF_QUALITY)
     txts = {
-        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло", "big": "😤 Завеликий файл"},
-        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло", "big": "😤 Слишком большой"},
-        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Failed", "big": "😤 Too big"},
-        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Raté", "big": "😤 Trop gros"},
+        "uk": {"search": "🎵 Шукаю трек...", "dl": "⚡ Завантажую...", "send": "📀 Відправляю...", "done": "🎉 Готово!", "err": "💔 Не вийшло", "big": "😤 Завеликий файл", "add": "📚 Додати в бібліотеку"},
+        "ru": {"search": "🎵 Ищу трек...", "dl": "⚡ Качаю...", "send": "📀 Отправляю...", "done": "🎉 Готово!", "err": "💔 Не вышло", "big": "😤 Слишком большой", "add": "📚 Добавить в библиотеку"},
+        "en": {"search": "🎵 Finding track...", "dl": "⚡ Downloading...", "send": "📀 Sending...", "done": "🎉 Done!", "err": "💔 Failed", "big": "😤 Too big", "add": "📚 Add to library"},
+        "fr": {"search": "🎵 Cherche le morceau...", "dl": "⚡ Télécharge...", "send": "📀 Envoie...", "done": "🎉 Terminé!", "err": "💔 Raté", "big": "😤 Trop gros", "add": "📚 Ajouter à la bibliothèque"},
     }
     t = txts.get(l, txts["en"])
 
     status = await msg.reply_text(t["search"], parse_mode="HTML")
+    success = False
     with tempfile.TemporaryDirectory() as tmp:
         try:
             await status.edit_text(t["dl"], parse_mode="HTML")
@@ -3184,33 +3185,45 @@ async def do_download(msg, url, title, artist, uid, ctx):
                 await status.edit_text(t["big"])
                 return
             await status.edit_text(t["send"], parse_mode="HTML")
+            safe_title = (title or "Track")[:64]
+            safe_artist = (artist or "")[:64]
             with open(path, "rb") as f:
                 await msg.reply_audio(
                     audio=f,
-                    title=title[:64],
-                    performer=artist[:64],
-                    filename=f"{title[:50]}.mp3"
+                    title=safe_title,
+                    performer=safe_artist,
+                    filename=f"{safe_title[:50]}.mp3"
                 )
+            success = True
+        except Exception as e:
+            logger.error(f"Download error: {e}", exc_info=True)
+            try:
+                await status.edit_text(t["err"])
+            except Exception:
+                pass
+            return
+
+    # Окремий блок після успіху — помилка в історії/кнопках більше не перезаписує «Готово»
+    if success:
+        try:
             await status.edit_text(t["done"])
+        except Exception:
+            pass
+        try:
             add_history(uid, title, artist)
             add_listening_stat(uid, title, artist, 0, "download")
-
+        except Exception as e:
+            logger.warning(f"History/stat error after download: {e}")
+        try:
             url_id = cache_url(ctx.bot_data, url, title, artist)
-            add_txts = {
-                "uk": "📚 Додати в бібліотеку",
-                "ru": "📚 Добавить в библиотеку",
-                "en": "📚 Add to library",
-                "fr": "📚 Ajouter à la bibliothèque",
-            }
-            add_txt = add_txts.get(l, add_txts["en"])
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton(add_txt, callback_data=f"addlib|{url_id}")],
+                [InlineKeyboardButton(t["add"], callback_data=f"addlib|{url_id}")],
                 [back_btn(uid)]
             ])
-            await msg.reply_text("", reply_markup=kb)
+            # Не порожній текст — Telegram API не приймає empty message
+            await msg.reply_text("⬇️", reply_markup=kb)
         except Exception as e:
-            logger.error(f"Download error: {e}")
-            await status.edit_text(t["err"])
+            logger.warning(f"Post-download keyboard error: {e}")
 
 
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
@@ -3936,15 +3949,19 @@ async def api_playlist(request):
         playlist_id = int(request.match_info.get("playlist_id", "0"))
         user_id = int(request.query.get("user", "0"))
 
-        # Перевіряємо чи плейлист належить користувачу
         pl, tracks = get_playlist(playlist_id)
         if not pl:
             return web.json_response({"error": "Playlist not found"}, status=404)
 
-        # Отримуємо дані плейлиста
+        # Перевірка власника
+        pl_uid = pl.get("user_id") if isinstance(pl, dict) else pl["user_id"]
+        if user_id and int(pl_uid) != int(user_id):
+            return web.json_response({"error": "Forbidden"}, status=403)
+
         pl_name = pl.get("name", "Плейлист") if isinstance(pl, dict) else pl["name"]
 
-        # Формуємо треки з URL для відтворення
+        # Не викликаємо yt-dlp на кожен трек — це блокує і часто дає прострочені URL.
+        # Плеєр використовує embed (SoundCloud/Deezer) або audio_url якщо є.
         track_list = []
         for t in tracks:
             title = t.get("title", "—") if isinstance(t, dict) else t["title"]
@@ -3952,25 +3969,12 @@ async def api_playlist(request):
             url = t.get("url", "") if isinstance(t, dict) else t["url"]
             duration = t.get("duration", "—") if isinstance(t, dict) else t["duration"]
 
-            # Шукаємо пряме MP3-посилання для відтворення
-            audio_url = None
-            if url:
-                try:
-                    # Спробуємо отримати пряме посилання через yt-dlp
-                    opts = {"quiet": True, "no_warnings": True, "format": "bestaudio/best"}
-                    with yt_dlp.YoutubeDL(opts) as ydl:
-                        info = ydl.extract_info(url, download=False)
-                        if info:
-                            audio_url = info.get("url") or info.get("formats", [{}])[0].get("url")
-                except Exception:
-                    pass
-
             track_list.append({
                 "title": title,
                 "artist": artist,
                 "duration": duration,
-                "url": url,
-                "audio_url": audio_url,
+                "url": url or "",
+                "audio_url": None,
                 "cover": "🎵"
             })
 
@@ -3979,8 +3983,12 @@ async def api_playlist(request):
             "tracks": track_list
         })
     except Exception as e:
-        logger.error(f"API error: {e}")
+        logger.error(f"API error: {e}", exc_info=True)
         return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_health(request):
+    return web.json_response({"ok": True, "service": "MusicLSP"})
 
 
 async def start_api_server():
@@ -3991,23 +3999,23 @@ async def start_api_server():
 
     app = web.Application()
 
-    # CORS middleware
-    async def cors_middleware(app, handler):
-        async def middleware_handler(request):
-            if request.method == "OPTIONS":
-                return web.Response(
-                    headers={
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "GET, OPTIONS",
-                        "Access-Control-Allow-Headers": "Content-Type",
-                    }
-                )
-            response = await handler(request)
-            response.headers["Access-Control-Allow-Origin"] = "*"
-            return response
-        return middleware_handler
+    @web.middleware
+    async def cors_middleware(request, handler):
+        if request.method == "OPTIONS":
+            return web.Response(
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type",
+                }
+            )
+        response = await handler(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
 
     app.middlewares.append(cors_middleware)
+    app.router.add_get("/", api_health)
+    app.router.add_get("/health", api_health)
     app.router.add_get("/api/playlist/{playlist_id}", api_playlist)
 
     runner = web.AppRunner(app)
