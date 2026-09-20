@@ -4595,6 +4595,24 @@ async def open_player(msg, playlist_id, uid, ctx):
     except Exception:
         await msg.reply_text(t["desc"], reply_markup=kb, parse_mode="HTML")
 
+async def cmd_debugurl(update, context):
+    """Тимчасова команда: показує згенероване посилання на панель текстом."""
+    uid = update.effective_user.id
+    base = (WEB_APP_URL or "").rstrip("/")
+    lines = [
+        f"WEB_APP_URL = {WEB_APP_URL!r}",
+        f"API_URL = {API_URL!r}",
+    ]
+    if not base or "your-username" in base or "НАЗВА" in base:
+        lines.append("panel_url = None (WEB_APP_URL не налаштований)")
+    else:
+        panel_url = f"{base}/index.html?user={uid}"
+        if API_URL:
+            panel_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
+        lines.append(f"panel_url = {panel_url}")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def run_bot():
     """Запускає бота з API сервером."""
     init_db()
@@ -4609,6 +4627,7 @@ async def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("admin", cmd_admin))
+    app.add_handler(CommandHandler("debugurl", cmd_debugurl))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
