@@ -44,10 +44,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ─── Web App плеєр ────────────────────────────────────────────────────────────
-WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://your-username.github.io/musiclsp-player")
+WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://your-username.github.io/musiclsp-player").strip()
 # Публічна адреса САМОГО бота (де піднімається aiohttp API, /api/... ) — це НЕ те саме, що WEB_APP_URL
 # На Railway це виду https://your-service.up.railway.app (без слеша в кінці)
-API_URL = os.environ.get("API_URL", "").rstrip("/")
+API_URL = os.environ.get("API_URL", "").strip().rstrip("/")
 
 # ─── AIOHTTP для API плеєра ─────────────────────────────────────────────────
 try:
@@ -2252,6 +2252,7 @@ async def show_welcome(msg, uid, bot=None):
             panel_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
         # cache-busting, щоб Telegram WebView не показував застарілу закешовану сторінку
         panel_url += f"&v={int(time.time())}"
+        panel_url = panel_url.strip()
 
     open_labels = {
         "uk": "🚀 Відкрити панель",
@@ -4588,6 +4589,7 @@ async def open_player(msg, playlist_id, uid, ctx):
     if API_URL:
         web_app_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
     web_app_url += f"&v={int(time.time())}"
+    web_app_url = web_app_url.strip()
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(t["open"], web_app=WebAppInfo(url=web_app_url))],
