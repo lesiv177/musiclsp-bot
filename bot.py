@@ -35,6 +35,13 @@ from telegram.ext import (
 )
 import yt_dlp
 
+# ─── Логування (обовʼязково перед будь-яким logger.*) ─────────────────────────
+logging.basicConfig(
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 # ─── Web App плеєр ────────────────────────────────────────────────────────────
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "https://your-username.github.io/musiclsp-player")
 
@@ -45,13 +52,6 @@ try:
 except ImportError:
     AIOHTTP_AVAILABLE = False
     logger.warning("aiohttp not installed — Web App API disabled")
-
-# ─── Логування ────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
 
 # ─── Конфіг ───────────────────────────────────────────────────────────────────
 BOT_TOKEN = os.environ.get("MAIN_BOT_TOKEN", "")
@@ -561,9 +561,20 @@ def init_db():
                         joined TIMESTAMP,
                         is_premium BOOLEAN DEFAULT FALSE,
                         premium_since TIMESTAMP,
+                        premium_expires TIMESTAMP,
                         state TEXT DEFAULT ''
                     )
                 """)
+                # Міграція: додаємо premium_expires якщо таблиця вже існувала без неї
+                try:
+                    c.execute("""
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='users' AND column_name='premium_expires'
+                    """)
+                    if not c.fetchone():
+                        c.execute("ALTER TABLE users ADD COLUMN premium_expires TIMESTAMP")
+                except Exception as e:
+                    logger.warning(f"Could not migrate premium_expires: {e}")
                 c.execute("""
                     CREATE TABLE IF NOT EXISTS library (
                         id SERIAL PRIMARY KEY,
@@ -652,6 +663,7 @@ def init_db():
                 joined TEXT,
                 is_premium INTEGER DEFAULT 0,
                 premium_since TEXT,
+                premium_expires TEXT,
                 state TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS library (
@@ -716,6 +728,14 @@ def init_db():
                 audio_hash TEXT
             );
             """)
+            # Міграція для існуючих SQLite БД
+            try:
+                cols = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+                if "premium_expires" not in cols:
+                    conn.execute("ALTER TABLE users ADD COLUMN premium_expires TEXT")
+                    conn.commit()
+            except Exception as e:
+                logger.warning(f"SQLite migrate premium_expires: {e}")
 
 
 # ── Хелпери БД (універсальні) ────────────────────────────────────────────────
@@ -802,12 +822,34 @@ def set_state(uid, state):
 
 
 def is_premium(uid):
+    """Перевіряє активний Premium (з урахуванням premium_expires)."""
     u = get_user(uid)
     if u is None:
         return False
+
     if isinstance(u, dict):
-        return bool(u.get("is_premium"))
-    return bool(u["is_premium"])
+        is_prem = bool(u.get("is_premium"))
+        expires = u.get("premium_expires")
+    else:
+        is_prem = bool(u["is_premium"]) if "is_premium" in u.keys() else False
+        try:
+            expires = u["premium_expires"]
+        except (KeyError, IndexError):
+            expires = None
+
+    if not is_prem:
+        return False
+    if not expires:
+        # Старий запис без expires — вважаємо активним (сумісність)
+        return True
+
+    try:
+        exp_dt = datetime.datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
+        return datetime.datetime.now(datetime.timezone.utc) < exp_dt
+    except Exception:
+        return bool(is_prem)
 
 
 def set_premium(uid, premium=True):
@@ -3992,7 +4034,7 @@ async def open_player(msg, playlist_id, uid, ctx):
     }
     t = texts.get(l, texts["en"])
 
-    web_app_url = f"{WEB_APP_URL}/player.html?playlist={playlist_id}&user={uid}"
+    web_app_url = f"{WEB_APP_URL}/index.html?playlist={playlist_id}&user={uid}"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(t["open"], web_app=WebAppInfo(url=web_app_url))],
