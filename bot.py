@@ -855,52 +855,98 @@ def set_state(uid, state):
         conn.close()
 
 
+def _as_bool(val):
+    """Надійне приведення is_premium з Postgres/SQLite до bool."""
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "t", "yes", "y")
+    return bool(val)
+
+
+def _parse_expires(expires):
+    """Парсить premium_expires (str / datetime) → aware datetime або None."""
+    if expires is None or expires == "":
+        return None
+    if isinstance(expires, datetime.datetime):
+        exp_dt = expires
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
+        return exp_dt
+    try:
+        s = str(expires).strip().replace("Z", "+00:00")
+        # Postgres іноді віддає "2026-09-20 12:00:00+00"
+        if " " in s and "T" not in s:
+            s = s.replace(" ", "T", 1)
+        exp_dt = datetime.datetime.fromisoformat(s)
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
+        return exp_dt
+    except Exception:
+        return None
+
+
 def is_premium(uid):
-    """Перевіряє активний Premium (з урахуванням premium_expires)."""
+    """Активний Premium: is_premium=True і (немає expires АБО expires у майбутньому)."""
     u = get_user(uid)
     if u is None:
         return False
 
     if isinstance(u, dict):
-        is_prem = bool(u.get("is_premium"))
+        is_prem = _as_bool(u.get("is_premium"))
         expires = u.get("premium_expires")
     else:
-        is_prem = bool(u["is_premium"]) if "is_premium" in u.keys() else False
+        try:
+            is_prem = _as_bool(u["is_premium"])
+        except (KeyError, IndexError, TypeError):
+            is_prem = False
         try:
             expires = u["premium_expires"]
-        except (KeyError, IndexError):
+        except (KeyError, IndexError, TypeError):
             expires = None
 
     if not is_prem:
         return False
-    if not expires:
-        # Старий запис без expires — вважаємо активним (сумісність)
+
+    exp_dt = _parse_expires(expires)
+    if exp_dt is None:
+        # Старі записи без дати закінчення — вважаємо активними
         return True
 
-    try:
-        exp_dt = datetime.datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
-        if exp_dt.tzinfo is None:
-            exp_dt = exp_dt.replace(tzinfo=datetime.timezone.utc)
-        return datetime.datetime.now(datetime.timezone.utc) < exp_dt
-    except Exception:
-        return bool(is_prem)
+    return datetime.datetime.now(datetime.timezone.utc) < exp_dt
 
 
-def set_premium(uid, premium=True):
-    now = datetime.datetime.now(datetime.timezone.utc).isoformat() if premium else None
+def set_premium(uid, premium=True, days=365):
+    """Видати/забрати Premium. При видачі ставить premium_expires на +days днів."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    now_iso = now.isoformat()
+    if premium:
+        expires_iso = (now + datetime.timedelta(days=days)).isoformat()
+        is_p_pg, is_p_sq = True, 1
+    else:
+        expires_iso = None
+        is_p_pg, is_p_sq = False, 0
+
+    # Гарантуємо, що юзер є в БД
+    create_user(uid, "")
+
     conn = db()
     try:
         if USE_POSTGRES:
             with conn.cursor() as c:
                 c.execute(
-                    "UPDATE users SET is_premium = %s, premium_since = %s WHERE id = %s",
-                    (premium, now, uid)
+                    "UPDATE users SET is_premium = %s, premium_since = %s, premium_expires = %s WHERE id = %s",
+                    (is_p_pg, now_iso if premium else None, expires_iso, uid)
                 )
             conn.commit()
         else:
             conn.execute(
-                "UPDATE users SET is_premium=?, premium_since=? WHERE id=?",
-                (1 if premium else 0, now, uid)
+                "UPDATE users SET is_premium=?, premium_since=?, premium_expires=? WHERE id=?",
+                (is_p_sq, now_iso if premium else None, expires_iso, uid)
             )
             conn.commit()
     finally:
@@ -2026,15 +2072,114 @@ def main_kb(uid):
     return InlineKeyboardMarkup(rows), "◀️ Back"
 
 
+# ─── Навігація (стек екранів) ─────────────────────────────────────────────────
+def nav_push(ctx, uid, screen):
+    """Додає екран у стек (не дублює підряд)."""
+    stack = ctx.bot_data.setdefault("nav", {}).setdefault(uid, [])
+    if not stack or stack[-1] != screen:
+        stack.append(screen)
+    if len(stack) > 15:
+        ctx.bot_data["nav"][uid] = stack[-15:]
+
+
+def nav_back(ctx, uid):
+    """Повертає попередній екран і прибирає поточний зі стеку."""
+    stack = ctx.bot_data.setdefault("nav", {}).setdefault(uid, [])
+    if len(stack) > 1:
+        stack.pop()
+        return stack[-1]
+    return "home"
+
+
 def back_btn(uid):
+    """Кнопка «Назад» — повертає на попередній екран, не завжди в головне меню."""
     l = get_lang(uid)
     labels = {
-        "uk": "◀️ На головну",
-        "ru": "◀️ На главную",
-        "en": "◀️ Home",
-        "fr": "◀️ Accueil",
+        "uk": "◀️ Назад",
+        "ru": "◀️ Назад",
+        "en": "◀️ Back",
+        "fr": "◀️ Retour",
     }
-    return InlineKeyboardButton(labels.get(l, "◀️ Home"), callback_data="m:home")
+    return InlineKeyboardButton(labels.get(l, "◀️ Back"), callback_data="m:back")
+
+
+async def _open_screen(msg, uid, ctx, screen):
+    """Відкриває екран за ключем зі стеку навігації."""
+    l = get_lang(uid)
+    set_state(uid, "")
+
+    if screen == "home" or not screen:
+        text = tx("home", l, bot=BOT_NAME)
+        if is_premium(uid):
+            text += "\n⭐ Premium"
+        kb, _ = main_kb(uid)
+        try:
+            await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+        return
+
+    if screen == "search":
+        set_state(uid, "searching")
+        text = {
+            "uk": "🔍 <b>Пошук треків</b>\n────────────────\nВведи назву пісні або артиста",
+            "ru": "🔍 <b>Поиск треков</b>\n────────────────\nВведи название песни или артиста",
+            "en": "🔍 <b>Track search</b>\n────────────────\nEnter song name or artist",
+        }.get(l, "🔍 Search")
+        try:
+            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        except Exception:
+            await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        return
+
+    if screen == "albums":
+        set_state(uid, "album_search")
+        text = {
+            "uk": "💿 <b>Пошук альбомів</b>\n────────────────\nВведи назву альбому або артиста",
+            "ru": "💿 <b>Поиск альбомов</b>\n────────────────\nВведи название альбома",
+            "en": "💿 <b>Album search</b>\n────────────────\nEnter album name",
+        }.get(l, "💿 Albums")
+        try:
+            await msg.edit_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        except Exception:
+            await msg.reply_text(text, reply_markup=InlineKeyboardMarkup([[back_btn(uid)]]), parse_mode="HTML")
+        return
+
+    if screen == "library":
+        await show_library(msg, uid, ctx)
+        return
+    if screen == "profile":
+        await show_profile(msg, uid)
+        return
+    if screen == "sub":
+        await show_sub(msg, uid, ctx)
+        return
+    if screen == "ref":
+        await show_ref(msg, uid, ctx)
+        return
+    if screen == "settings":
+        await show_settings(msg, uid, ctx)
+        return
+    if screen == "playlists":
+        await show_playlists_menu(msg, uid, ctx)
+        return
+    if screen.startswith("playlist:"):
+        try:
+            pid = int(screen.split(":", 1)[1])
+            await show_playlist(msg, pid, uid, ctx)
+        except Exception:
+            await show_playlists_menu(msg, uid, ctx)
+        return
+    if screen == "stats":
+        await show_stats(msg, uid)
+        return
+
+    # fallback
+    kb, _ = main_kb(uid)
+    try:
+        await msg.edit_text(tx("home", l, bot=BOT_NAME), reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        await msg.reply_text(tx("home", l, bot=BOT_NAME), reply_markup=kb, parse_mode="HTML")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2139,6 +2284,7 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Home
     if data == "m:home":
         set_state(uid, "")
+        ctx.bot_data.setdefault("nav", {})[uid] = ["home"]
         text = tx("home", l, bot=BOT_NAME)
         if is_premium(uid):
             text += {
@@ -2154,8 +2300,17 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             await q.message.reply_text(text, reply_markup=kb, parse_mode="HTML")
         return
 
+    # Назад — попередній екран зі стеку
+    if data == "m:back":
+        set_state(uid, "")
+        prev = nav_back(ctx, uid)
+        await _open_screen(q.message, uid, ctx, prev)
+        return
+
     # Search menu
     if data == "m:search":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "search")
         set_state(uid, "searching")
         prompts = {
             "uk": "🔍 <b>Пошук треків</b>\n────────────────\nВведи назву пісні або артиста\n\n<i>Приклад:</i> <code>Oxxxy Аргентина</code>",
@@ -2172,6 +2327,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Albums menu
     if data == "m:albums":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "albums")
         set_state(uid, "album_search")
         prompts = {
             "uk": "💿 <b>Пошук альбомів</b>\n────────────────\nВведи назву альбому або артиста\n\n<i>Приклади:</i>\n• <code>Yanix SS 20</code>\n• <code>Imagine Dragons Mercury</code>\n• <code>Linkin Park Hybrid Theory</code>",
@@ -2188,18 +2345,28 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     # Simple menus
     if data == "m:library":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "library")
         await show_library(q.message, uid, ctx)
         return
     if data == "m:profile":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "profile")
         await show_profile(q.message, uid)
         return
     if data == "m:sub":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "sub")
         await show_sub(q.message, uid, ctx)
         return
     if data == "m:ref":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "ref")
         await show_ref(q.message, uid, ctx)
         return
     if data == "m:settings":
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "settings")
         await show_settings(q.message, uid, ctx)
         return
 
@@ -2293,6 +2460,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not is_premium(uid):
             await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
             return
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "playlists")
         await show_playlists_menu(q.message, uid, ctx)
         return
 
@@ -2300,6 +2469,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not is_premium(uid):
             await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
             return
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "radio")
         set_state(uid, "radio_input")
         prompts = {
             "uk": "📻 Введи артиста або пісню для радіо:",
@@ -2318,6 +2489,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not is_premium(uid):
             await q.message.reply_text(tx("premium_only", l), parse_mode="HTML")
             return
+        nav_push(ctx, uid, "home")
+        nav_push(ctx, uid, "stats")
         await show_stats(q.message, uid)
         return
 
@@ -2605,6 +2778,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Playlist callbacks
     if data.startswith("pl_view|"):
         pid = int(data.split("|")[1])
+        nav_push(ctx, uid, "playlists")
+        nav_push(ctx, uid, f"playlist:{pid}")
         await show_playlist(q.message, pid, uid, ctx)
         return
     if data.startswith("pl_player|"):
@@ -3321,10 +3496,6 @@ async def do_download(msg, url, title, artist, uid, ctx):
     # Окремий блок після успіху — помилка в історії/кнопках більше не перезаписує «Готово»
     if success:
         try:
-            await status.edit_text(t["done"])
-        except Exception:
-            pass
-        try:
             add_history(uid, title, artist)
             add_listening_stat(uid, title, artist, 0, "download")
         except Exception as e:
@@ -3333,12 +3504,20 @@ async def do_download(msg, url, title, artist, uid, ctx):
             url_id = cache_url(ctx.bot_data, url, title, artist)
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(t["add"], callback_data=f"addlib|{url_id}")],
-                [back_btn(uid)]
+                [back_btn(uid)],
             ])
-            # Не порожній текст — Telegram API не приймає empty message
-            await msg.reply_text("⬇️", reply_markup=kb)
+            # Текст + кнопки в одному повідомленні (без окремого смайла)
+            done_text = f"{t['done']}\n{(title or '')[:40]}"
+            try:
+                await status.edit_text(done_text, reply_markup=kb, parse_mode="HTML")
+            except Exception:
+                await msg.reply_text(done_text, reply_markup=kb, parse_mode="HTML")
         except Exception as e:
             logger.warning(f"Post-download keyboard error: {e}")
+            try:
+                await status.edit_text(t["done"])
+            except Exception:
+                pass
 
 
 async def do_download_spotify_album_zip(msg, album_data, uid, ctx):
