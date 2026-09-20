@@ -5,6 +5,7 @@ MusicLSP v3.2 — Deezer + SoundCloud + Spotify + MusicBrainz
 """
 
 import os
+import time
 import logging
 import asyncio
 import tempfile
@@ -2249,6 +2250,8 @@ async def show_welcome(msg, uid, bot=None):
         panel_url = f"{base}/index.html?user={uid}"
         if API_URL:
             panel_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
+        # cache-busting, щоб Telegram WebView не показував застарілу закешовану сторінку
+        panel_url += f"&v={int(time.time())}"
 
     open_labels = {
         "uk": "🚀 Відкрити панель",
@@ -4584,6 +4587,7 @@ async def open_player(msg, playlist_id, uid, ctx):
     web_app_url = f"{WEB_APP_URL}/index.html?playlist={playlist_id}&user={uid}"
     if API_URL:
         web_app_url += f"&api={urllib.parse.quote(API_URL, safe='')}"
+    web_app_url += f"&v={int(time.time())}"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(t["open"], web_app=WebAppInfo(url=web_app_url))],
