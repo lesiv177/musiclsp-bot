@@ -2203,7 +2203,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def show_welcome(msg, uid):
+async def show_welcome(msg, uid, bot=None):
     """Юзерам — тільки WebApp. Адмінка лишається в чаті через /admin."""
     l = get_lang(uid)
     status = "⭐ Premium" if is_premium(uid) else "💿 Free"
@@ -2238,20 +2238,52 @@ async def show_welcome(msg, uid):
         ),
     }
     text = texts.get(l, texts["en"])
-    panel_url = f"{WEB_APP_URL.rstrip('/')}/index.html?user={uid}"
+    # Якщо WEB_APP_URL не налаштований — кнопка все одно з текстом, без падіння
+    base = (WEB_APP_URL or "").rstrip("/")
+    if not base or "your-username" in base or "НАЗВА" in base:
+        panel_url = None
+    else:
+        panel_url = f"{base}/index.html?user={uid}"
+
     open_labels = {
         "uk": "🚀 Відкрити панель",
         "ru": "🚀 Открыть панель",
         "en": "🚀 Open panel",
         "fr": "🚀 Ouvrir le panneau",
     }
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(open_labels.get(l, "🚀 Open panel"), web_app=WebAppInfo(url=panel_url))],
-    ])
+    if panel_url:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(open_labels.get(l, "🚀 Open panel"), web_app=WebAppInfo(url=panel_url))],
+        ])
+    else:
+        # Без WebApp — хоча б текст, щоб /start не «мовчав»
+        kb = None
+        text += {
+            "uk": "\n\n⚠️ WEB_APP_URL ще не налаштований у env бота.",
+            "ru": "\n\n⚠️ WEB_APP_URL ещё не настроен в env бота.",
+            "en": "\n\n⚠️ WEB_APP_URL is not set in bot env.",
+        }.get(l, "\n\n⚠️ WEB_APP_URL is not set.")
+
+    # 1) спроба edit 2) reply 3) send_message (після delete мови)
     try:
         await msg.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        return
     except Exception:
+        pass
+    try:
         await msg.reply_text(text, reply_markup=kb, parse_mode="HTML")
+        return
+    except Exception:
+        pass
+    try:
+        chat_id = getattr(msg, "chat_id", None) or uid
+        sender = bot
+        if sender is None and hasattr(msg, "get_bot"):
+            sender = msg.get_bot()
+        if sender is not None:
+            await sender.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"show_welcome failed: {e}", exc_info=True)
 
 
 async def cmd_admin(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -2300,11 +2332,8 @@ async def on_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Language selection
     if data.startswith("lang:"):
         set_lang(uid, data[5:])
-        try:
-            await q.message.delete()
-        except Exception:
-            pass
-        await show_welcome(q.message, uid)
+        # Не видаляємо повідомлення — edit у show_welcome; якщо edit не вийде — send_message
+        await show_welcome(q.message, uid, bot=ctx.bot)
         return
 
     # Home — лише WebApp (меню кнопок більше не показуємо)
