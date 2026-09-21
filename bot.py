@@ -52,6 +52,7 @@ API_URL = os.environ.get("API_URL", "").strip().rstrip("/")
 # ─── AIOHTTP для API плеєра ─────────────────────────────────────────────────
 try:
     from aiohttp import web
+    import aiohttp
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
@@ -4783,6 +4784,208 @@ async def api_album_zip(request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+def _resolve_direct_stream_url(url):
+    """Дістає пряме посилання на аудіо-потік (без завантаження файлу на диск).
+    Для Deezer використовує ARL-cookie так само, як і звичайне завантаження —
+    інакше yt-dlp віддасть лише 30-секундний прев'ю-потік замість повного треку."""
+    opts = {
+        "format": "bestaudio/best",
+        "quiet": True, "no_warnings": True, "noplaylist": True,
+        "socket_timeout": 20,
+    }
+    cookie_dir = None
+    if "deezer.com" in (url or ""):
+        if DEEZER_ARL:
+            try:
+                cookie_dir = tempfile.mkdtemp()
+                cookie_path = os.path.join(cookie_dir, "deezer_arl.txt")
+                with open(cookie_path, "w", encoding="utf-8") as cf:
+                    cf.write("# Netscape HTTP Cookie File\n")
+                    cf.write(f".deezer.com\tTRUE\t/\tTRUE\t0\tarl\t{DEEZER_ARL}\n")
+                opts["cookiefile"] = cookie_path
+            except Exception as e:
+                logger.warning(f"Failed to write Deezer cookie file for stream: {e}")
+        elif os.path.exists(DEEZER_COOKIES_FILE):
+            opts["cookiefile"] = DEEZER_COOKIES_FILE
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info:
+            return None
+        if info.get("url"):
+            return info["url"]
+        formats = info.get("formats") or []
+        audio_formats = [f for f in formats if f.get("acodec") not in (None, "none") and f.get("url")]
+        if audio_formats:
+            audio_formats.sort(key=lambda f: (f.get("abr") or 0), reverse=True)
+            return audio_formats[0]["url"]
+    except Exception as e:
+        logger.warning(f"resolve stream url failed for {url}: {e}")
+    finally:
+        if cookie_dir:
+            try:
+                import shutil
+                shutil.rmtree(cookie_dir, ignore_errors=True)
+            except Exception:
+                pass
+    return None
+
+
+# невеликий in-memory кеш прямих посилань, щоб не смикати yt-dlp на кожен timeupdate/seek
+_STREAM_CACHE = {}
+_STREAM_CACHE_TTL = 60 * 12  # 12 хв — типовий час життя підписаних CDN-посилань
+
+
+async def api_stream(request):
+    """Проксі-стрімінг аудіо прямо в WebApp-плеєр (без завантаження в Telegram-чат)."""
+    if not AIOHTTP_AVAILABLE:
+        return web.json_response({"error": "streaming unavailable"}, status=500)
+    upstream_resp = None
+    session = None
+    try:
+        src_url = (request.query.get("url") or "").strip()
+        title = (request.query.get("title") or "").strip()
+        artist = (request.query.get("artist") or "").strip()
+        if not src_url and title and artist:
+            found = await async_find_track(title, artist)
+            if found:
+                src_url = found.get("url") or ""
+        if not src_url:
+            return web.json_response({"error": "url or title+artist required"}, status=400)
+
+        cache_key = src_url
+        now = time.time()
+        cached = _STREAM_CACHE.get(cache_key)
+        if cached and (now - cached[1]) < _STREAM_CACHE_TTL:
+            direct = cached[0]
+        else:
+            direct = await _to_thread(_resolve_direct_stream_url, src_url)
+            if direct:
+                _STREAM_CACHE[cache_key] = (direct, now)
+
+        if not direct:
+            return web.json_response({"error": "stream not found"}, status=404)
+
+        fwd_headers = {"User-Agent": "Mozilla/5.0 (compatible; MusicLSP/1.0)"}
+        range_header = request.headers.get("Range")
+        if range_header:
+            fwd_headers["Range"] = range_header
+
+        session = aiohttp.ClientSession()
+        upstream_resp = await session.get(direct, headers=fwd_headers, timeout=aiohttp.ClientTimeout(total=None, sock_connect=15))
+
+        status = upstream_resp.status if upstream_resp.status in (200, 206) else 200
+        out_headers = {
+            "Content-Type": upstream_resp.headers.get("Content-Type", "audio/mpeg"),
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+        }
+        if "Content-Length" in upstream_resp.headers:
+            out_headers["Content-Length"] = upstream_resp.headers["Content-Length"]
+        if "Content-Range" in upstream_resp.headers:
+            out_headers["Content-Range"] = upstream_resp.headers["Content-Range"]
+
+        resp = web.StreamResponse(status=status, headers=out_headers)
+        await resp.prepare(request)
+        async for chunk in upstream_resp.content.iter_chunked(65536):
+            await resp.write(chunk)
+        await resp.write_eof()
+        return resp
+    except Exception as e:
+        logger.error(f"api_stream: {e}", exc_info=True)
+        try:
+            return web.json_response({"error": str(e)}, status=500)
+        except Exception:
+            return web.Response(status=500)
+    finally:
+        try:
+            if upstream_resp is not None:
+                upstream_resp.release()
+        except Exception:
+            pass
+        try:
+            if session is not None:
+                await session.close()
+        except Exception:
+            pass
+
+
+async def api_radio(request):
+    """Генерує чергу треків для радіо-режиму у WebApp (без Telegram-сесії)."""
+    try:
+        seed = (request.query.get("seed") or "").strip()
+        if not seed:
+            return web.json_response({"error": "seed required"}, status=400)
+        seed_tracks = await async_search(seed, limit=5)
+        if not seed_tracks:
+            return web.json_response({"tracks": [], "error": "no seed results"})
+        radio_tracks = []
+        for t in seed_tracks[:2]:
+            try:
+                similar = await async_artist(t.get("channel", seed), 10)
+                radio_tracks.extend(similar or [])
+            except Exception:
+                pass
+        try:
+            extra = await async_search("popular music 2024", limit=10)
+            radio_tracks.extend(extra or [])
+        except Exception:
+            pass
+        # прибираємо дублікати за url, зберігаючи порядок
+        seen = set()
+        uniq = []
+        for t in radio_tracks:
+            u = t.get("url")
+            if u and u not in seen:
+                seen.add(u)
+                uniq.append(t)
+        random.shuffle(uniq)
+        uniq = uniq[:30]
+        if not uniq:
+            uniq = seed_tracks
+        return web.json_response({
+            "seed": seed,
+            "tracks": [_track_dict(t) for t in uniq],
+        })
+    except Exception as e:
+        logger.error(f"api_radio: {e}", exc_info=True)
+        return web.json_response({"error": str(e), "tracks": []}, status=500)
+
+
+async def api_lyrics(request):
+    """Пошук пісні на Genius. Повертає лише метадані + посилання (умови Genius API
+    не дозволяють роздавати повний текст пісні напряму)."""
+    try:
+        q = (request.query.get("q") or "").strip()
+        if not q:
+            return web.json_response({"error": "q required"}, status=400)
+        if not GENIUS_TOKEN:
+            return web.json_response({"error": "genius_not_configured"}, status=500)
+        headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+        resp = await _to_thread(
+            requests.get,
+            f"https://api.genius.com/search?q={urllib.parse.quote(q)}",
+            headers=headers, timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        hits = data.get("response", {}).get("hits", [])
+        if not hits:
+            return web.json_response({"found": False})
+        result = hits[0].get("result", {})
+        return web.json_response({
+            "found": True,
+            "title": result.get("title", "Unknown"),
+            "artist": result.get("primary_artist", {}).get("name", "Unknown"),
+            "url": result.get("url", ""),
+            "thumbnail": result.get("song_art_image_thumbnail_url", ""),
+        })
+    except Exception as e:
+        logger.error(f"api_lyrics: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
 async def start_api_server():
     """Запускає aiohttp API для WebApp-панелі."""
     if not AIOHTTP_AVAILABLE:
@@ -4823,6 +5026,9 @@ async def start_api_server():
     app.router.add_post("/api/playlists/remove_track", api_playlist_remove_track)
     app.router.add_get("/api/album", api_album)
     app.router.add_post("/api/album/zip", api_album_zip)
+    app.router.add_get("/api/stream", api_stream)
+    app.router.add_get("/api/radio", api_radio)
+    app.router.add_get("/api/lyrics", api_lyrics)
 
     runner = web.AppRunner(app)
     await runner.setup()
