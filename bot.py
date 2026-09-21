@@ -974,14 +974,15 @@ def add_library(uid, title, artist, url, kind="track"):
                     return False, "full"
                 c.execute("SELECT id FROM library WHERE user_id = %s AND url = %s", (uid, url))
                 ex = c.fetchone()
-                if not ex:
-                    c.execute(
-                        "INSERT INTO library(user_id, title, artist, url, kind, added) "
-                        "VALUES(%s, %s, %s, %s, %s, %s)",
-                        (uid, title, artist, url, kind, now)
-                    )
+                if ex:
+                    return False, "exists"
+                c.execute(
+                    "INSERT INTO library(user_id, title, artist, url, kind, added) "
+                    "VALUES(%s, %s, %s, %s, %s, %s)",
+                    (uid, title, artist, url, kind, now)
+                )
             conn.commit()
-            return True, "added" if not ex else False, "exists"
+            return True, "added"
         else:
             count = conn.execute(
                 "SELECT COUNT(*) as c FROM library WHERE user_id=?", (uid,)
@@ -4308,6 +4309,7 @@ async def get_lyrics(msg, query, uid):
 def _track_dict(t):
     if isinstance(t, dict):
         return {
+            "id": t.get("id"),
             "title": t.get("title") or "—",
             "artist": t.get("artist") or t.get("channel") or "—",
             "duration": t.get("duration") or "—",
@@ -4317,6 +4319,7 @@ def _track_dict(t):
             "source": t.get("source") or "",
         }
     return {
+        "id": t["id"] if "id" in t.keys() else None,
         "title": t["title"] if "title" in t.keys() else "—",
         "artist": (t["artist"] if "artist" in t.keys() else (t["channel"] if "channel" in t.keys() else "—")),
         "duration": t["duration"] if "duration" in t.keys() else "—",
@@ -4430,6 +4433,7 @@ async def api_library(request):
         for s in items or []:
             if isinstance(s, dict):
                 tracks.append({
+                    "id": s.get("id"),
                     "title": s.get("title") or "—",
                     "artist": s.get("artist") or "—",
                     "url": s.get("url") or "",
@@ -4439,6 +4443,7 @@ async def api_library(request):
                 })
             else:
                 tracks.append({
+                    "id": s["id"] if "id" in s.keys() else None,
                     "title": s["title"],
                     "artist": s["artist"],
                     "url": s["url"],
@@ -4471,13 +4476,15 @@ async def api_playlists(request):
 
 
 async def api_download(request):
-    """Ставить завантаження в чергу і надсилає MP3 користувачу в Telegram."""
+    """Ставить завантаження в чергу і надсилає MP3 користувачу в Telegram.
+    Якщо url не передано, але є title+artist — намагається знайти трек сам
+    (потрібно для треків з альбомів MusicBrainz, де прямого посилання нема)."""
     try:
         uid = int(request.query.get("user", "0"))
         url = (request.query.get("url") or "").strip()
         title = (request.query.get("title") or "Track")[:80]
         artist = (request.query.get("artist") or "")[:80]
-        if not uid or not url:
+        if not uid or (not url and not (title and artist)):
             return web.json_response({"ok": False, "error": "user/url required"}, status=400)
         if not BOT_TOKEN:
             return web.json_response({"ok": False, "error": "bot not configured"}, status=500)
@@ -4485,12 +4492,25 @@ async def api_download(request):
         async def _job():
             from telegram import Bot
             bot = Bot(BOT_TOKEN)
+            real_url = url
+            if not real_url:
+                try:
+                    found = await async_find_track(title, artist)
+                except Exception:
+                    found = None
+                if not found or not found.get("url"):
+                    try:
+                        await bot.send_message(uid, f"😔 Не знайшов трек: <b>{title}</b>", parse_mode="HTML")
+                    except Exception:
+                        pass
+                    return
+                real_url = found["url"]
             try:
                 await bot.send_message(uid, f"⚡ Завантажую: <b>{title}</b>…", parse_mode="HTML")
             except Exception:
                 pass
             with tempfile.TemporaryDirectory() as tmp:
-                path = await async_download_with_fallback(url, tmp, DEF_QUALITY)
+                path = await async_download_with_fallback(real_url, tmp, DEF_QUALITY)
                 if not path or not os.path.exists(path):
                     try:
                         await bot.send_message(uid, "💔 Не вийшло завантажити трек")
@@ -4529,6 +4549,240 @@ async def api_download(request):
         return web.json_response({"ok": False, "error": str(e)}, status=500)
 
 
+async def api_library_add(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        title = (request.query.get("title") or "").strip()[:120]
+        artist = (request.query.get("artist") or "").strip()[:120]
+        url = (request.query.get("url") or "").strip()
+        if not uid or not title or not url:
+            return web.json_response({"ok": False, "error": "user/title/url required"}, status=400)
+        ok, reason = await _to_thread(add_library, uid, title, artist, url)
+        return web.json_response({"ok": ok, "reason": reason})
+    except Exception as e:
+        logger.error(f"api_library_add: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def api_library_remove(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        lid = int(request.query.get("id", "0"))
+        if not uid or not lid:
+            return web.json_response({"ok": False, "error": "user/id required"}, status=400)
+        await _to_thread(del_library, uid, lid)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        logger.error(f"api_library_remove: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def api_playlist_create(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        name = (request.query.get("name") or "").strip()[:60]
+        if not uid or not name:
+            return web.json_response({"ok": False, "error": "user/name required"}, status=400)
+        if not is_premium(uid):
+            return web.json_response({"ok": False, "error": "premium_only"}, status=403)
+        pid = await _to_thread(create_playlist, uid, name)
+        return web.json_response({"ok": True, "id": pid, "name": name})
+    except Exception as e:
+        logger.error(f"api_playlist_create: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def api_playlist_delete(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        pid = int(request.query.get("playlist_id", "0"))
+        if not uid or not pid:
+            return web.json_response({"ok": False, "error": "user/playlist_id required"}, status=400)
+        await _to_thread(delete_playlist, uid, pid)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        logger.error(f"api_playlist_delete: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def api_playlist_add_track(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        pid = int(request.query.get("playlist_id", "0"))
+        title = (request.query.get("title") or "").strip()[:120]
+        artist = (request.query.get("artist") or "").strip()[:120]
+        url = (request.query.get("url") or "").strip()
+        duration = (request.query.get("duration") or "")[:16]
+        if not uid or not pid or not title or not url:
+            return web.json_response({"ok": False, "error": "user/playlist_id/title/url required"}, status=400)
+        if not is_premium(uid):
+            return web.json_response({"ok": False, "error": "premium_only"}, status=403)
+        pl, _ = await _to_thread(get_playlist, pid)
+        pl_uid = pl.get("user_id") if isinstance(pl, dict) else (pl["user_id"] if pl else None)
+        if not pl or int(pl_uid) != int(uid):
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        await _to_thread(add_track_to_playlist, pid, title, artist, url, duration)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        logger.error(f"api_playlist_add_track: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def api_playlist_remove_track(request):
+    try:
+        uid = int(request.query.get("user", "0"))
+        pid = int(request.query.get("playlist_id", "0"))
+        tid = int(request.query.get("track_id", "0"))
+        if not uid or not pid or not tid:
+            return web.json_response({"ok": False, "error": "user/playlist_id/track_id required"}, status=400)
+        pl, _ = await _to_thread(get_playlist, pid)
+        pl_uid = pl.get("user_id") if isinstance(pl, dict) else (pl["user_id"] if pl else None)
+        if not pl or int(pl_uid) != int(uid):
+            return web.json_response({"ok": False, "error": "not_found"}, status=404)
+        await _to_thread(delete_playlist_track, pid, tid)
+        return web.json_response({"ok": True})
+    except Exception as e:
+        logger.error(f"api_playlist_remove_track: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
+async def api_album(request):
+    """Деталі альбому + трек-лист для WebApp (MusicBrainz або Deezer)."""
+    try:
+        mbid = (request.query.get("mbid") or "").strip()
+        deezer_id = (request.query.get("deezer_id") or "").strip()
+        if mbid:
+            album = await async_mb_full_info(mbid)
+        elif deezer_id:
+            album = await _to_thread(dz_get_album_tracks, deezer_id)
+        else:
+            return web.json_response({"error": "mbid or deezer_id required"}, status=400)
+        if not album:
+            return web.json_response({"error": "Album not found"}, status=404)
+        cover = album.get("image_url") or "💿"
+        tracks = []
+        for t in album.get("tracks", []):
+            t_url = t.get("url") or ""
+            tracks.append({
+                "title": t.get("name") or t.get("title") or "—",
+                "artist": t.get("artists") or t.get("artist") or album.get("artist") or "—",
+                "duration": t.get("duration") or "—",
+                "url": t_url,
+                "audio_url": None,
+                "cover": cover,
+                "source": album.get("source") or ("musicbrainz" if mbid else "deezer"),
+            })
+        return web.json_response({
+            "name": album.get("name"),
+            "artist": album.get("artist"),
+            "year": album.get("year"),
+            "total_tracks": album.get("total_tracks"),
+            "cover": cover,
+            "tracks": tracks,
+            "mbid": mbid or None,
+            "deezer_id": deezer_id or None,
+        })
+    except Exception as e:
+        logger.error(f"api_album: {e}", exc_info=True)
+        return web.json_response({"error": str(e)}, status=500)
+
+
+async def api_album_zip(request):
+    """Ставить в чергу збір ZIP з усього альбому і надсилає в чат користувача."""
+    try:
+        uid = int(request.query.get("user", "0"))
+        mbid = (request.query.get("mbid") or "").strip()
+        deezer_id = (request.query.get("deezer_id") or "").strip()
+        if not uid or (not mbid and not deezer_id):
+            return web.json_response({"ok": False, "error": "user + mbid/deezer_id required"}, status=400)
+        if not BOT_TOKEN:
+            return web.json_response({"ok": False, "error": "bot not configured"}, status=500)
+
+        async def _job():
+            from telegram import Bot
+            bot = Bot(BOT_TOKEN)
+            if mbid:
+                album = await async_mb_full_info(mbid)
+            else:
+                album = await _to_thread(dz_get_album_tracks, deezer_id)
+            if not album:
+                try:
+                    await bot.send_message(uid, "😔 Альбом не знайдено")
+                except Exception:
+                    pass
+                return
+            try:
+                await bot.send_message(
+                    uid, f"⬇️ Збираю альбом: <b>{album.get('name','')}</b>…", parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            quality = DEF_QUALITY
+            tracks_with_url = []
+            src_tracks = album.get("tracks", [])
+            for t in src_tracks:
+                name = t.get("name") or t.get("title") or "—"
+                artists = t.get("artists") or t.get("artist") or album.get("artist") or "—"
+                direct_url = t.get("url")
+                if direct_url:
+                    tracks_with_url.append({"title": f"{artists} — {name}", "url": direct_url})
+                else:
+                    try:
+                        found = await async_find_track(name, artists)
+                    except Exception:
+                        found = None
+                    if found and found.get("url"):
+                        tracks_with_url.append({"title": f"{artists} — {name}", "url": found["url"]})
+                await asyncio.sleep(0.2)
+            if not tracks_with_url:
+                try:
+                    await bot.send_message(uid, "😔 Не знайдено жодного трека для завантаження")
+                except Exception:
+                    pass
+                return
+            tmp_dir = tempfile.mkdtemp()
+            try:
+                zip_path = await create_album_zip(tracks_with_url, quality, tmp_dir)
+                if not zip_path or not os.path.exists(zip_path):
+                    try:
+                        await bot.send_message(uid, "❌ Помилка створення архіву")
+                    except Exception:
+                        pass
+                    return
+                size_mb = os.path.getsize(zip_path) / 1024 / 1024
+                if size_mb > 2000:
+                    try:
+                        await bot.send_message(uid, f"❌ Архів {size_mb:.1f} МБ — завеликий")
+                    except Exception:
+                        pass
+                    return
+                safe_name = f"{album.get('artist','')} - {album.get('name','')}"[:50]
+                with open(zip_path, "rb") as f:
+                    await bot.send_document(
+                        chat_id=uid,
+                        document=f,
+                        filename=f"{safe_name}.zip",
+                        caption=(
+                            f"💿 <b>{album.get('name','')}</b>\n"
+                            f"🎤 {album.get('artist','')}\n"
+                            f"📦 {len(tracks_with_url)}/{len(src_tracks)} треків"
+                        ),
+                        parse_mode="HTML",
+                    )
+            finally:
+                try:
+                    import shutil
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+        asyncio.create_task(_job())
+        return web.json_response({"ok": True, "queued": True})
+    except Exception as e:
+        logger.error(f"api_album_zip: {e}", exc_info=True)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
+
 async def start_api_server():
     """Запускає aiohttp API для WebApp-панелі."""
     if not AIOHTTP_AVAILABLE:
@@ -4543,7 +4797,7 @@ async def start_api_server():
             return web.Response(
                 headers={
                     "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "GET, OPTIONS",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type",
                 }
             )
@@ -4561,6 +4815,14 @@ async def start_api_server():
     app.router.add_get("/api/playlists", api_playlists)
     app.router.add_get("/api/playlist/{playlist_id}", api_playlist)
     app.router.add_get("/api/download", api_download)
+    app.router.add_post("/api/library/add", api_library_add)
+    app.router.add_post("/api/library/remove", api_library_remove)
+    app.router.add_post("/api/playlists/create", api_playlist_create)
+    app.router.add_post("/api/playlists/delete", api_playlist_delete)
+    app.router.add_post("/api/playlists/add_track", api_playlist_add_track)
+    app.router.add_post("/api/playlists/remove_track", api_playlist_remove_track)
+    app.router.add_get("/api/album", api_album)
+    app.router.add_post("/api/album/zip", api_album_zip)
 
     runner = web.AppRunner(app)
     await runner.setup()
