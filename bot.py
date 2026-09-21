@@ -4316,6 +4316,7 @@ def _track_dict(t):
             "duration": t.get("duration") or "—",
             "url": t.get("url") or "",
             "audio_url": t.get("audio_url"),
+            "preview_url": t.get("preview_url") or "",
             "cover": t.get("cover") or "🎵",
             "source": t.get("source") or "",
         }
@@ -4326,6 +4327,7 @@ def _track_dict(t):
         "duration": t["duration"] if "duration" in t.keys() else "—",
         "url": t["url"] if "url" in t.keys() else "",
         "audio_url": None,
+        "preview_url": "",
         "cover": "🎵",
         "source": "",
     }
@@ -4490,6 +4492,10 @@ async def api_download(request):
         if not BOT_TOKEN:
             return web.json_response({"ok": False, "error": "bot not configured"}, status=500)
 
+        limits = get_limits(uid)
+        req_quality = (request.query.get("quality") or "").strip()
+        quality = req_quality if req_quality in limits.get("quality_options", ["192"]) else DEF_QUALITY
+
         async def _job():
             from telegram import Bot
             bot = Bot(BOT_TOKEN)
@@ -4511,7 +4517,7 @@ async def api_download(request):
             except Exception:
                 pass
             with tempfile.TemporaryDirectory() as tmp:
-                path = await async_download_with_fallback(real_url, tmp, DEF_QUALITY)
+                path = await async_download_with_fallback(real_url, tmp, quality)
                 if not path or not os.path.exists(path):
                     try:
                         await bot.send_message(uid, "💔 Не вийшло завантажити трек")
@@ -4544,7 +4550,7 @@ async def api_download(request):
                         pass
 
         asyncio.create_task(_job())
-        return web.json_response({"ok": True, "queued": True})
+        return web.json_response({"ok": True, "queued": True, "quality": quality})
     except Exception as e:
         logger.error(f"api_download: {e}", exc_info=True)
         return web.json_response({"ok": False, "error": str(e)}, status=500)
@@ -4696,8 +4702,12 @@ async def api_album_zip(request):
         deezer_id = (request.query.get("deezer_id") or "").strip()
         if not uid or (not mbid and not deezer_id):
             return web.json_response({"ok": False, "error": "user + mbid/deezer_id required"}, status=400)
+        if not is_premium(uid):
+            return web.json_response({"ok": False, "error": "premium_only"}, status=403)
         if not BOT_TOKEN:
             return web.json_response({"ok": False, "error": "bot not configured"}, status=500)
+
+        zip_quality = get_limits(uid)["quality_options"][-1]
 
         async def _job():
             from telegram import Bot
@@ -4718,7 +4728,7 @@ async def api_album_zip(request):
                 )
             except Exception:
                 pass
-            quality = DEF_QUALITY
+            quality = zip_quality
             tracks_with_url = []
             src_tracks = album.get("tracks", [])
             for t in src_tracks:
@@ -4843,6 +4853,9 @@ async def api_stream(request):
     upstream_resp = None
     session = None
     try:
+        uid = int(request.query.get("user", "0") or 0)
+        if not uid or not is_premium(uid):
+            return web.json_response({"error": "premium_only"}, status=403)
         src_url = (request.query.get("url") or "").strip()
         title = (request.query.get("title") or "").strip()
         artist = (request.query.get("artist") or "").strip()
@@ -4914,6 +4927,9 @@ async def api_stream(request):
 async def api_radio(request):
     """Генерує чергу треків для радіо-режиму у WebApp (без Telegram-сесії)."""
     try:
+        uid = int(request.query.get("user", "0") or 0)
+        if not uid or not is_premium(uid):
+            return web.json_response({"error": "premium_only", "tracks": []}, status=403)
         seed = (request.query.get("seed") or "").strip()
         if not seed:
             return web.json_response({"error": "seed required"}, status=400)
@@ -4957,6 +4973,9 @@ async def api_lyrics(request):
     """Пошук пісні на Genius. Повертає лише метадані + посилання (умови Genius API
     не дозволяють роздавати повний текст пісні напряму)."""
     try:
+        uid = int(request.query.get("user", "0") or 0)
+        if not uid or not is_premium(uid):
+            return web.json_response({"error": "premium_only"}, status=403)
         q = (request.query.get("q") or "").strip()
         if not q:
             return web.json_response({"error": "q required"}, status=400)
